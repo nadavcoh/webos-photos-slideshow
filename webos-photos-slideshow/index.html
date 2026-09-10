@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1920, height=1080, user-scalable=no" />
+  <title>Ambient Photos</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ============================================================
+       PAIRING SCREEN
+       Shown on first run (no stored refresh token) and again if a
+       token becomes invalid. Two steps are shown in sequence:
+       1) Google sign-in via the Device Authorization Grant
+       2) Photos Picker session so the user can choose what to show
+       ============================================================ -->
+  <div id="pairing-screen" class="screen hidden">
+    <div class="pairing-card">
+      <h1 class="pairing-title">Ambient Photos</h1>
+
+      <!-- Step 1: account sign-in -->
+      <div id="pairing-step-signin" class="pairing-step">
+        <p class="pairing-instructions">
+          On your phone or computer, go to
+        </p>
+        <p class="pairing-url" id="signin-url">google.com/device</p>
+        <p class="pairing-instructions">and enter this code:</p>
+        <p class="pairing-code" id="signin-code">— — — — —</p>
+        <p class="pairing-status" id="signin-status">Waiting for sign-in&hellip;</p>
+      </div>
+
+      <!-- Step 2: pick photos/albums via the Photos Picker -->
+      <div id="pairing-step-picker" class="pairing-step hidden">
+        <p class="pairing-instructions">
+          Now choose the photos to display. On your phone, open:
+        </p>
+        <p class="pairing-url" id="picker-url">&nbsp;</p>
+        <div id="picker-qr" class="pairing-qr"></div>
+        <p class="pairing-status" id="picker-status">Waiting for photo selection&hellip;</p>
+      </div>
+
+      <div id="pairing-error" class="pairing-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SLIDESHOW VIEW
+       Two stacked <img> layers are cross-faded between; only one
+       is ever visible/opaque at a time. This avoids any flash of
+       blank screen between images.
+       ============================================================ -->
+  <div id="slideshow-screen" class="screen hidden">
+    <img id="layer-a" class="photo-layer" alt="" />
+    <img id="layer-b" class="photo-layer" alt="" />
+    <div class="vignette"></div>
+    <div id="overlay" class="overlay">
+      <span id="overlay-date"></span>
+    </div>
+  </div>
+
+  <div id="boot-screen" class="screen">
+    <div class="boot-spinner"></div>
+  </div>
+
+  <!-- Tiny QR renderer, used only for the Picker session URL -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
