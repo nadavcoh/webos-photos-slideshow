@@ -111,6 +111,53 @@ To iterate quickly during development, `ares-install` again after each
    stored too, so it also skips step 2 for as long as that session
    remains valid — pick again if it expires.
 
+## 6. Automatic deploys via GitHub Actions (`.github/workflows/deploy-webos.yml`)
+
+The workflow packages the app, joins your tailnet, and pushes the result
+straight to the TV on every push to `main`. Two things to set up first:
+
+### a) Tailscale reachability
+
+webOS has no Tailscale client, so the TV itself is never a tailnet node.
+The GitHub-hosted runner only reaches it if **one** of these is true:
+
+- A device already on your home LAN (a Pi, NAS, or router) is running
+  Tailscale as a **subnet router**:
+  ```bash
+  sudo tailscale up --advertise-routes=192.168.1.0/24   # use your TV's actual subnet
+  ```
+  then approve that route in the [Tailscale admin console](https://login.tailscale.com/admin/machines).
+- Or you self-host the Actions runner on a machine already on that LAN
+  (swap `runs-on: ubuntu-latest` for `runs-on: self-hosted` in the
+  workflow) — in that case the Tailscale step is optional.
+
+Create a Tailscale OAuth client (Admin console → Settings → OAuth clients)
+scoped to write devices with `tag:ci`, and add these repo secrets:
+- `TS_OAUTH_CLIENT_ID`
+- `TS_OAUTH_SECRET`
+
+### b) TV pairing key
+
+Generate this once, locally, from a machine already on the same LAN as
+the TV (with Developer Mode open and its passphrase visible on-screen):
+
+```bash
+ares-setup-device --add livingroom-tv --info \
+  '{"host":"<TV LAN IP>","port":"9922","username":"prisoner"}'
+ares-novacom --device livingroom-tv --getkey --passphrase <passphrase-shown-on-TV>
+base64 -i ~/.novacom-cert/livingroom-tv/webos_rsa | pbcopy   # macOS; use base64 -w0 on Linux
+```
+
+Add these repo secrets:
+- `WEBOS_TV_SSH_KEY_B64` — the base64 output from above
+- `WEBOS_TV_HOST` — the TV's LAN IP (reachable via the subnet route)
+- `WEBOS_APP_ID` — must match `appinfo.json` → `"id"`
+
+Developer Mode sessions expire after a couple of days unless extended in
+the Developer Mode app on the TV; the derived key stops working once the
+session lapses and you'll need to regenerate it via the two commands
+above with a fresh passphrase.
+
 ## Notes / things to adjust for your setup
 
 - **15-second crossfade timing** lives in `CONFIG.SLIDE_INTERVAL_MS` and
