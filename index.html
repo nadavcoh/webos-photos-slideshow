@@ -13,7 +13,8 @@
        Shown on first run (no stored refresh token) and again if a
        token becomes invalid. Two steps are shown in sequence:
        1) Google sign-in via the Device Authorization Grant
-       2) Photos Picker session so the user can choose what to show
+       2) Ambient API device setup, so the user can choose the
+          photos/albums this TV should display
        ============================================================ -->
   <div id="pairing-screen" class="screen hidden">
     <div class="pairing-card">
@@ -30,14 +31,14 @@
         <p class="pairing-status" id="signin-status">Waiting for sign-in&hellip;</p>
       </div>
 
-      <!-- Step 2: pick photos/albums via the Photos Picker -->
-      <div id="pairing-step-picker" class="pairing-step hidden">
+      <!-- Step 2: choose media sources via the Ambient API device settings -->
+      <div id="pairing-step-media" class="pairing-step hidden">
         <p class="pairing-instructions">
           Now choose the photos to display. On your phone, open:
         </p>
-        <p class="pairing-url" id="picker-url">&nbsp;</p>
-        <div id="picker-qr" class="pairing-qr"></div>
-        <p class="pairing-status" id="picker-status">Waiting for photo selection&hellip;</p>
+        <p class="pairing-url" id="media-url">&nbsp;</p>
+        <div id="media-qr" class="pairing-qr"></div>
+        <p class="pairing-status" id="media-status">Waiting for photo selection&hellip;</p>
       </div>
 
       <div id="pairing-error" class="pairing-error hidden"></div>
@@ -63,7 +64,7 @@
     <div class="boot-spinner"></div>
   </div>
 
-  <!-- Tiny QR renderer, used only for the Picker session URL -->
+  <!-- Tiny QR renderer, used only for the Ambient device settings URL -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="app.js"></script>
 </body>

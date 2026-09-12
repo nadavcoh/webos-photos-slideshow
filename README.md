@@ -1,22 +1,24 @@
 # Ambient Photos — webOS TV slideshow
 
-## ⚠️ Read this first: the Library API can no longer search a user's whole library
+## ⚠️ Read this first: two other Google Photos APIs were tried and rejected
 
 Your original spec called for `mediaItems:search` filtered by album or
 favorite status. As of **April 1, 2025**, Google removed that capability
 for the `photoslibrary.readonly` scope — the Library API now only returns
-items an app *itself* uploaded. General search/browse access moved to the
-new **Photos Picker API**.
+items an app *itself* uploaded.
 
-That's actually a decent fit for a TV: the device shows a link/QR code,
-the user picks photos or whole albums on their phone in the Google Photos
-app, and the TV polls until they're done. That's what this app implements.
-The trade-off: the user re-picks periodically (session-based), rather than
-you querying "the favorites album" programmatically forever. If you later
-want zero re-picking, the alternative is to have a companion script upload
-copies of the photos you want into an album *created by this app* (via the
-`photoslibrary.appendonly` scope), which the Library API can then list
-indefinitely — that's a bigger build and not included here.
+The obvious next choice, the **Photos Picker API**, turns out not to work
+here either: its scope (`photospicker.mediaitems.readonly`) isn't on
+Google's allow-list of scopes for the OAuth Device Authorization Grant —
+requesting it returns `invalid_scope`, full stop.
+
+What actually works, and what this app uses, is the **Photos Ambient
+API** — a scope (`photosambient.mediaitems`) purpose-built by Google for
+exactly this use case: ambient photo displays on TVs and screensavers.
+It's arguably a better fit than either alternative: the device shows a
+link/QR code, the user picks albums/photos on their phone in the Google
+Photos app once, and Google Photos then serves an ongoing *curated feed*
+from those sources — no repeated re-picking sessions to manage.
 
 ## Directory layout
 
@@ -26,7 +28,7 @@ webos-photos-slideshow/
 ├── icon.png           ← 80x80 app icon (placeholder — swap for your own)
 ├── index.html         ← markup for pairing screen + slideshow
 ├── style.css           ← dark-mode lean-back styling, crossfade CSS
-└── app.js              ← OAuth device flow, Photos Picker flow, slideshow engine
+└── app.js              ← OAuth device flow, Ambient API flow, slideshow engine
 ```
 
 Everything is plain HTML/CSS/JS — no build step, no bundler. This directory
@@ -37,7 +39,7 @@ is exactly what you hand to `ares-package`.
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and
    create a new project (or pick an existing one).
 2. **APIs & Services → Library** → enable:
-   - **Google Photos Picker API**
+   - **Google Photos Ambient API**
 3. **APIs & Services → OAuth consent screen** → configure it (External is
    fine for personal use; add your own Google account as a test user if
    the app stays in "Testing" mode, which is fine for a personal device).
@@ -52,6 +54,10 @@ is exactly what you hand to `ares-package`.
    limited-input device to keep it confidential). Keep the OAuth consent
    screen in "Testing" mode with only your own account as a tester so the
    blast radius of that secret leaking is limited to your own data.
+
+   Also note: before your app is Google-verified, you'll see an
+   "unverified app" warning on the consent screen during sign-in — expected
+   in Testing mode, just click through it (Advanced → Go to [app name]).
 
 ## 2. Configure the app
 
@@ -106,15 +112,15 @@ To iterate quickly during development, `ares-install` again after each
 
 1. The app shows a sign-in code and `google.com/device` — enter it on
    your phone/PC and approve access.
-2. It then shows a QR code / link for the **Photos Picker** — scan it (or
-   open the link) on your phone, choose an album or individual photos in
-   the Google Photos app, and confirm.
-3. The slideshow starts automatically and keeps running; the picked-item
-   list is silently refreshed every 50 minutes to keep image URLs
-   (which expire hourly) valid. The refresh token is stored in
-   `localStorage`, so a reboot skips step 1. The picker session id is
-   stored too, so it also skips step 2 for as long as that session
-   remains valid — pick again if it expires.
+2. It then shows a QR code / link to this device's **Google Photos
+   settings page** — scan it (or open the link) on your phone, choose the
+   albums or photos you want this TV to draw from, and confirm.
+3. The slideshow starts automatically and keeps running; the curated
+   media list is silently refreshed every 50 minutes to keep image URLs
+   (which expire hourly) valid. The refresh token and this device's id
+   are stored in `localStorage`, so a reboot skips both steps above —
+   reopen the settings link any time (from Google Photos app settings)
+   if you want to change the selected sources.
 
 ## 6. Automatic deploys via GitHub Actions (`.github/workflows/deploy-webos.yml`)
 
@@ -193,8 +199,12 @@ above with a fresh passphrase.
 - **15-second crossfade timing** lives in `CONFIG.SLIDE_INTERVAL_MS` and
   the CSS `--transition-duration` variable in `style.css`.
 - **Image count cap** (`CONFIG.MAX_ITEMS_TO_LOAD`) guards against loading
-  an enormous picked album into memory at once; raise it if you picked a
-  large album and want the full set in rotation.
+  an enormous curated feed into memory at once — the Ambient API caps
+  each page at 100 items anyway, matching this default.
+- **Rate limit**: `mediaItems.list` is capped at 240 requests per device
+  per day by Google. The 50-minute refresh interval works out to well
+  under that on its own; only lower `MEDIA_LIST_REFRESH_MS` with that
+  ceiling in mind.
 - webOS's browser engine is Chromium-based and modern enough for all the
   `fetch`/`async`/`URLSearchParams` used here, but if you're targeting a
   very old webOS 4 firmware revision, test on the actual TV early —

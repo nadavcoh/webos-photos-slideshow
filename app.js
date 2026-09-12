@@ -3,24 +3,33 @@
  *
  * Flow:
  *   1. If we have a stored refresh token, use it to get an
- *      access token silently and skip straight to the picker
+ *      access token silently and skip straight to the device
  *      check / slideshow.
  *   2. Otherwise run the OAuth 2.0 Device Authorization Grant
  *      so the TV shows a code the user enters on google.com/device.
- *   3. Once signed in, if we don't yet have a completed Photos
- *      Picker session, create one and show its URL + a QR code
- *      so the user can pick photos/albums on their phone.
- *   4. Once photos are picked, list them and start the slideshow.
- *      Base URLs (the actual image bytes) expire after ~60
- *      minutes, so the media list is silently re-fetched on a
- *      timer without interrupting playback.
+ *   3. Once signed in, if we don't yet have an Ambient API device
+ *      with media sources configured, create one and show its
+ *      settings URL + a QR code so the user can pick albums/photos
+ *      on their phone.
+ *   4. Once media sources are set, list curated media items and
+ *      start the slideshow. Base URLs (the actual image bytes)
+ *      expire after ~60 minutes, so the media list is silently
+ *      re-fetched on a timer without interrupting playback.
  *
  * IMPORTANT — read the README before running this:
- *   Google retired general library search in the Photos Library
- *   API on April 1, 2025. `mediaItems:search` now only returns
- *   items your app itself uploaded. To show a user's existing
- *   photos/albums you must use the Photos Picker API, which is
- *   what this file does. See README.md for full setup steps.
+ *   Two Google Photos APIs were tried and rejected before landing
+ *   here, in case you're comparing against older notes:
+ *     - `mediaItems:search` (Library API) stopped supporting
+ *       general library search on April 1, 2025.
+ *     - The Picker API's scope
+ *       (photospicker.mediaitems.readonly) is NOT on Google's
+ *       allow-list for the Device Authorization Grant used here —
+ *       requesting it returns `invalid_scope`.
+ *   The **Ambient API** (scope: photosambient.mediaitems) is
+ *   purpose-built for ambient displays like this one, its scope
+ *   IS allowed over the device flow, and it gives a persistent
+ *   "device" with an ongoing curated feed instead of a one-shot
+ *   picker session. See README.md for full setup steps.
  * ============================================================ */
 
 /* ---------------------- CONFIG ---------------------- */
@@ -31,23 +40,34 @@ const CONFIG = {
   CLIENT_ID: "YOUR_CLIENT_ID.apps.googleusercontent.com",
   CLIENT_SECRET: "YOUR_CLIENT_SECRET",
 
-  // Photos Picker only needs this narrow, read-only scope.
-  SCOPE: "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+  // The Ambient API's scope, as documented for use with the device
+  // flow. "profile" is included because Google's own Ambient API
+  // sample requests it alongside the API scope.
+  SCOPE: "profile https://www.googleapis.com/auth/photosambient.mediaitems",
 
   // Google endpoints
   DEVICE_CODE_URL: "https://oauth2.googleapis.com/device/code",
   TOKEN_URL: "https://oauth2.googleapis.com/token",
-  PICKER_SESSION_URL: "https://photospicker.googleapis.com/v1/sessions",
-  PICKER_MEDIA_ITEMS_URL: "https://photospicker.googleapis.com/v1/mediaItems",
+  AMBIENT_DEVICES_URL: "https://photosambient.googleapis.com/v1/devices",
+  AMBIENT_MEDIA_ITEMS_URL: "https://photosambient.googleapis.com/v1/mediaItems",
+
+  // Shown to the user in Google Photos' device settings list.
+  DEVICE_DISPLAY_NAME: "Living Room TV",
+
+  // How long to keep polling devices.get waiting for the user to
+  // finish picking media sources, before giving up and showing an
+  // error (they can retry from the pairing screen).
+  MEDIA_SOURCE_POLL_TIMEOUT_MS: 30 * 60 * 1000,
 
   // Slideshow behavior
   SLIDE_INTERVAL_MS: 15 * 1000,          // 15 seconds per requirement
   MEDIA_LIST_REFRESH_MS: 50 * 60 * 1000, // re-fetch baseUrls before the 60 min expiry
-  MAX_ITEMS_TO_LOAD: 200,                // cap memory/pagination for very large picks
+  MAX_ITEMS_TO_LOAD: 100,                // mediaItems.list caps at 100/page for the curated feed
 
   // localStorage keys
   LS_REFRESH_TOKEN: "ambient_photos_refresh_token",
-  LS_PICKER_SESSION_ID: "ambient_photos_picker_session_id",
+  LS_DEVICE_ID: "ambient_photos_device_id",
+  LS_DEVICE_REQUEST_ID: "ambient_photos_device_request_id",
 };
 
 /* ---------------------- DOM ---------------------- */
@@ -62,10 +82,10 @@ const el = {
   signinCode: document.getElementById("signin-code"),
   signinStatus: document.getElementById("signin-status"),
 
-  pickerStep: document.getElementById("pairing-step-picker"),
-  pickerUrl: document.getElementById("picker-url"),
-  pickerQr: document.getElementById("picker-qr"),
-  pickerStatus: document.getElementById("picker-status"),
+  mediaStep: document.getElementById("pairing-step-media"),
+  mediaUrl: document.getElementById("media-url"),
+  mediaQr: document.getElementById("media-qr"),
+  mediaStatus: document.getElementById("media-status"),
 
   pairingError: document.getElementById("pairing-error"),
 
@@ -99,6 +119,21 @@ const store = {
     try { localStorage.removeItem(key); } catch (e) { /* no-op */ }
   },
 };
+
+/** RFC 4122 v4 UUID, without relying on crypto.randomUUID (unavailable on
+ *  older Chromium builds that some webOS versions ship with). */
+function uuidv4() {
+  const bytes = new Uint8Array(16);
+  if (window.crypto && window.crypto.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+}
 
 /* In-memory access token (never persisted — only the refresh token is) */
 let accessToken = null;
@@ -167,7 +202,7 @@ function pollForDeviceToken(deviceCode, intervalSeconds) {
           reject(new Error("Sign-in was denied."));
           break;
         default:
-          reject(new Error(`Token polling error: ${body.error || res.status}`));
+          reject(new Error(`Token polling error: ${body.error || res.status}${body.error_description ? " — " + body.error_description : ""}`));
       }
     };
     poll();
@@ -238,48 +273,51 @@ async function ensureAccessToken() {
 }
 
 /* ============================================================
- * STEP B — Google Photos Picker API
+ * STEP B — Google Photos Ambient API
  * ============================================================ */
 
-async function createPickerSession(token) {
-  const res = await fetch(CONFIG.PICKER_SESSION_URL, {
+async function createAmbientDevice(token, requestId) {
+  const url = new URL(CONFIG.AMBIENT_DEVICES_URL);
+  url.searchParams.set("requestId", requestId);
+
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: "{}",
+    body: JSON.stringify({ displayName: CONFIG.DEVICE_DISPLAY_NAME }),
   });
-  if (!res.ok) throw new Error(`Picker session creation failed: ${res.status}`);
-  return res.json(); // { id, pickerUri, pollingConfig: { pollInterval, timeoutIn }, mediaItemsSet }
+  if (!res.ok) throw new Error(`devices.create failed: ${res.status}`);
+  return res.json(); // AmbientDevice: { id, displayName, settingsUri, mediaSourcesSet, pollingConfig, ... }
 }
 
-async function getPickerSession(token, sessionId) {
-  const res = await fetch(`${CONFIG.PICKER_SESSION_URL}/${sessionId}`, {
+async function getAmbientDevice(token, deviceId) {
+  const res = await fetch(`${CONFIG.AMBIENT_DEVICES_URL}/${deviceId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(`Picker session lookup failed: ${res.status}`);
+  if (!res.ok) throw new Error(`devices.get failed: ${res.status}`);
   return res.json();
 }
 
-/** Polls a picker session until the user finishes selecting media on their phone. */
-function pollPickerSession(token, sessionId, pollIntervalSeconds, timeoutSeconds) {
+/** Polls a device until the user finishes picking media sources on their phone. */
+function pollUntilMediaSourcesSet(token, deviceId, pollIntervalSeconds, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const deadline = Date.now() + timeoutSeconds * 1000;
+    const deadline = Date.now() + timeoutMs;
     const poll = async () => {
       if (Date.now() > deadline) {
-        reject(new Error("Picker session timed out before a selection was made."));
+        reject(new Error("Timed out waiting for media sources to be selected."));
         return;
       }
-      let session;
+      let device;
       try {
-        session = await getPickerSession(token, sessionId);
+        device = await getAmbientDevice(token, deviceId);
       } catch (err) {
         setTimeout(poll, pollIntervalSeconds * 1000);
         return;
       }
-      if (session.mediaItemsSet) {
-        resolve(session);
+      if (device.mediaSourcesSet) {
+        resolve(device);
       } else {
         setTimeout(poll, pollIntervalSeconds * 1000);
       }
@@ -289,49 +327,53 @@ function pollPickerSession(token, sessionId, pollIntervalSeconds, timeoutSeconds
 }
 
 /**
- * Runs the full picker UI + network sequence:
- * creates a session, shows the QR/URL, waits for completion.
- * Persists the session id so a restart doesn't force a re-pick.
+ * Runs the full "choose media sources" UI + network sequence: creates (or
+ * reuses) an Ambient device, shows its settings QR/URL, waits for the user
+ * to finish picking sources. Persists the device id and the requestId used
+ * to create it, so a restart doesn't create a duplicate device.
  */
-async function runPickerFlow(token) {
-  el.pickerStep.classList.remove("hidden");
-  el.pickerStatus.textContent = "Creating picker session…";
+async function runMediaSourceSetup(token) {
+  el.mediaStep.classList.remove("hidden");
+  el.mediaStatus.textContent = "Setting up this device in Google Photos…";
 
-  const session = await createPickerSession(token);
-  store.set(CONFIG.LS_PICKER_SESSION_ID, session.id);
+  let requestId = store.get(CONFIG.LS_DEVICE_REQUEST_ID);
+  if (!requestId) {
+    requestId = uuidv4();
+    store.set(CONFIG.LS_DEVICE_REQUEST_ID, requestId);
+  }
 
-  el.pickerUrl.textContent = session.pickerUri;
-  el.pickerQr.innerHTML = "";
+  const device = await createAmbientDevice(token, requestId);
+  store.set(CONFIG.LS_DEVICE_ID, device.id);
+
+  el.mediaUrl.textContent = device.settingsUri;
+  el.mediaQr.innerHTML = "";
   // eslint-disable-next-line no-undef
-  new QRCode(el.pickerQr, {
-    text: session.pickerUri,
+  new QRCode(el.mediaQr, {
+    text: device.settingsUri,
     width: 220,
     height: 220,
   });
 
-  el.pickerStatus.textContent = "Waiting for photo selection…";
+  el.mediaStatus.textContent = "Waiting for photo selection…";
 
-  const pollInterval = session.pollingConfig?.pollInterval
-    ? parseInt(session.pollingConfig.pollInterval, 10)
-    : 3;
-  const timeout = session.pollingConfig?.timeoutIn
-    ? parseInt(session.pollingConfig.timeoutIn, 10)
-    : 1800;
+  const pollInterval = device.pollingConfig?.pollInterval
+    ? parseFloat(device.pollingConfig.pollInterval)
+    : 5;
 
-  await pollPickerSession(token, session.id, pollInterval, timeout);
+  await pollUntilMediaSourcesSet(token, device.id, pollInterval, CONFIG.MEDIA_SOURCE_POLL_TIMEOUT_MS);
 
-  el.pickerStep.classList.add("hidden");
-  return session.id;
+  el.mediaStep.classList.add("hidden");
+  return device.id;
 }
 
-/** Fetches every picked media item for a completed session (paginated). */
-async function listPickedMediaItems(token, sessionId) {
+/** Fetches curated ambient media items for a device (paginated). */
+async function listAmbientMediaItems(token, deviceId) {
   const items = [];
   let pageToken = "";
 
   do {
-    const url = new URL(CONFIG.PICKER_MEDIA_ITEMS_URL);
-    url.searchParams.set("sessionId", sessionId);
+    const url = new URL(CONFIG.AMBIENT_MEDIA_ITEMS_URL);
+    url.searchParams.set("deviceId", deviceId);
     url.searchParams.set("pageSize", "100");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
@@ -343,7 +385,7 @@ async function listPickedMediaItems(token, sessionId) {
     pageToken = body.nextPageToken || "";
   } while (pageToken && items.length < CONFIG.MAX_ITEMS_TO_LOAD);
 
-  // Photos only — skip videos for a still-image ambient slideshow.
+  // Photos only — skip any videos for a still-image ambient slideshow.
   return items.filter((item) => item.mediaFile?.mimeType?.startsWith("image/"));
 }
 
@@ -363,9 +405,8 @@ function fullResUrl(item) {
 }
 
 function formatDate(item) {
-  const iso = item.mediaFile?.mediaFileMetadata?.creationTime || item.createTime;
-  if (!iso) return "";
-  const d = new Date(iso);
+  if (!item.createTime) return "";
+  const d = new Date(item.createTime);
   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
@@ -410,11 +451,11 @@ function startSlideshow() {
 }
 
 /** Re-fetches the media list (fresh baseUrls) without interrupting playback. */
-function scheduleMediaListRefresh(sessionId) {
+function scheduleMediaListRefresh(deviceId) {
   setInterval(async () => {
     try {
       const token = await ensureAccessToken();
-      const fresh = await listPickedMediaItems(token, sessionId);
+      const fresh = await listAmbientMediaItems(token, deviceId);
       if (fresh.length) mediaItems = fresh;
     } catch (err) {
       // Keep showing the current (possibly stale) list; next tick retries.
@@ -431,30 +472,31 @@ async function boot() {
   showScreen("boot");
   try {
     const token = await ensureAccessToken();
-    showScreen("pairing"); // stays hidden unless runPickerFlow needs it
+    showScreen("pairing"); // stays hidden unless runMediaSourceSetup needs it
 
-    let sessionId = store.get(CONFIG.LS_PICKER_SESSION_ID);
-    let needsNewSession = true;
+    let deviceId = store.get(CONFIG.LS_DEVICE_ID);
+    let needsSetup = true;
 
-    if (sessionId) {
+    if (deviceId) {
       try {
-        const session = await getPickerSession(token, sessionId);
-        needsNewSession = !session.mediaItemsSet;
+        const device = await getAmbientDevice(token, deviceId);
+        needsSetup = !device.mediaSourcesSet;
       } catch (e) {
-        needsNewSession = true;
+        // Device was deleted, or belongs to a client ID we no longer use — redo setup.
+        needsSetup = true;
       }
     }
 
-    if (needsNewSession) {
-      sessionId = await runPickerFlow(token);
+    if (needsSetup) {
+      deviceId = await runMediaSourceSetup(token);
     }
 
-    mediaItems = await listPickedMediaItems(token, sessionId);
+    mediaItems = await listAmbientMediaItems(token, deviceId);
     if (mediaItems.length === 0) {
-      throw new Error("No photos were found in the picker selection.");
+      throw new Error("No photos were found for this device's media sources.");
     }
 
-    scheduleMediaListRefresh(sessionId);
+    scheduleMediaListRefresh(deviceId);
     startSlideshow();
   } catch (err) {
     console.error(err);
