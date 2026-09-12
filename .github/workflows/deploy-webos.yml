@@ -44,7 +44,7 @@ jobs:
           version: latest
 
       - name: Confirm the TV is reachable
-        run: tailscale ping --c 2 "${{ secrets.WEBOS_TV_HOST }}"
+        run: tailscale ping --c 2 --until-direct=false "${{ secrets.WEBOS_TV_HOST }}"
 
       # ----------------------------------------------------------------
       # 2. Package the app
