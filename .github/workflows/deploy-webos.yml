@@ -44,7 +44,9 @@ jobs:
           version: latest
 
       - name: Confirm the TV is reachable
-        run: tailscale ping --c 2 "${{ secrets.WEBOS_TV_HOST }}"
+        run: tailscale ping --c 2 --until-direct=false "${{ secrets.WEBOS_TV_HOST }}"
+      - name: Confirm the TV is reachable
+        run: ping -c 2 "${{ secrets.WEBOS_TV_HOST }}"
 
       # ----------------------------------------------------------------
       # 2. Package the app
@@ -52,7 +54,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install webOS CLI
         run: npm install -g @webosose/ares-cli
@@ -88,7 +90,7 @@ jobs:
           mv appinfo.json.tmp appinfo.json
 
       - name: Package ipk
-        run: ares-package .
+        run: ares-package --no-minify .
 
       - name: Locate built ipk
         id: ipk
@@ -115,7 +117,8 @@ jobs:
       - name: Register TV device profile
         run: |
           ares-setup-device --add livingroom-tv --info \
-            "{\"host\":\"${{ secrets.WEBOS_TV_HOST }}\",\"port\":\"9922\",\"username\":\"prisoner\",\"privateKey\":\"webos_rsa\"}"
+            "{\"host\":\"${{ secrets.WEBOS_TV_HOST }}\",\"port\":\"9922\",\"username\":\"prisoner\",\"privatekey\":\"webos_rsa\"}"
+          ares-setup-device --listfull
 
       - name: Install to TV
         run: ares-install -d livingroom-tv "${{ steps.ipk.outputs.path }}"
