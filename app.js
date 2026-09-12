@@ -211,6 +211,12 @@ function pollForDeviceToken(deviceCode, intervalSeconds) {
 
 /** Runs the full device flow UI + network sequence and stores the refresh token. */
 async function runDeviceSignIn() {
+  // Reveal the pairing screen itself here, not just this step within it —
+  // boot() doesn't call showScreen("pairing") until ensureAccessToken()
+  // resolves, which doesn't happen until sign-in is fully complete. Without
+  // this line the code/URL below get written into the DOM correctly, but
+  // stay hidden behind the boot spinner the whole time.
+  showScreen("pairing");
   el.signinStep.classList.remove("hidden");
   el.signinStatus.textContent = "Requesting a sign-in code…";
 
