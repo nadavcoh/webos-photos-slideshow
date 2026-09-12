@@ -108,14 +108,14 @@ jobs:
       # ----------------------------------------------------------------
       - name: Restore novacom key
         run: |
-          mkdir -p "$HOME/.webos-ci-key"
-          echo "${{ secrets.WEBOS_TV_SSH_KEY_B64 }}" | base64 -d > "$HOME/.webos-ci-key/webos_rsa"
-          chmod 600 "$HOME/.webos-ci-key/webos_rsa"
+          mkdir -p "$HOME/.ssh"
+          echo "${{ secrets.WEBOS_TV_SSH_KEY_B64 }}" | base64 -d > "$HOME/.ssh/webos_rsa"
+          chmod 600 "$HOME/.ssh/webos_rsa"
 
       - name: Register TV device profile
         run: |
           ares-setup-device --add livingroom-tv --info \
-            "{\"host\":\"${{ secrets.WEBOS_TV_HOST }}\",\"port\":\"9922\",\"username\":\"prisoner\",\"privateKey\":\"$HOME/.webos-ci-key/webos_rsa\"}"
+            "{\"host\":\"${{ secrets.WEBOS_TV_HOST }}\",\"port\":\"9922\",\"username\":\"prisoner\",\"privateKey\":\"webos_rsa\"}"
 
       - name: Install to TV
         run: ares-install -d livingroom-tv "${{ steps.ipk.outputs.path }}"
