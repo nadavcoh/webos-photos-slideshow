@@ -117,7 +117,7 @@ jobs:
       - name: Register TV device profile
         run: |  
           ares-setup-device --add livingroom-tv \
-            -i "host=\"${{ secrets.WEBOS_TV_HOST }}\"" \
+            -i "host=${{ secrets.WEBOS_TV_HOST }}" \
             -i "port=9922" \
             -i "username=prisoner" \
             -i "privatekey=webos_rsa" \
