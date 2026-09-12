@@ -54,7 +54,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install webOS CLI
         run: npm install -g @webosose/ares-cli
@@ -118,6 +118,7 @@ jobs:
         run: |
           ares-setup-device --add livingroom-tv --info \
             "{\"host\":\"${{ secrets.WEBOS_TV_HOST }}\",\"port\":\"9922\",\"username\":\"prisoner\",\"privatekey\":\"$HOME/.webos-ci-key/webos_rsa\"}"
+          ares-setup-device --listfull
 
       - name: Install to TV
         run: ares-install -d livingroom-tv "${{ steps.ipk.outputs.path }}"
