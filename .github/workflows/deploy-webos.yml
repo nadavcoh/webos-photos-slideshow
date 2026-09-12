@@ -90,7 +90,7 @@ jobs:
           mv appinfo.json.tmp appinfo.json
 
       - name: Package ipk
-        run: ares-package .
+        run: ares-package --no-minify .
 
       - name: Locate built ipk
         id: ipk
