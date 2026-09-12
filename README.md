@@ -55,7 +55,12 @@ is exactly what you hand to `ares-package`.
 
 ## 2. Configure the app
 
-Open `app.js` and fill in:
+**If you're deploying via the GitHub Action (section 6 below), skip this
+step** — leave the placeholders in `app.js` and `appinfo.json` as they
+are. The workflow substitutes them from repo secrets at build time, so
+your real Client ID/Secret and app ID never need to touch the repo.
+
+For manual/local packaging instead, open `app.js` and fill in:
 
 ```js
 CLIENT_ID: "YOUR_CLIENT_ID.apps.googleusercontent.com",
@@ -151,7 +156,18 @@ base64 -i ~/.novacom-cert/livingroom-tv/webos_rsa | pbcopy   # macOS; use base64
 Add these repo secrets:
 - `WEBOS_TV_SSH_KEY_B64` — the base64 output from above
 - `WEBOS_TV_HOST` — the TV's LAN IP (reachable via the subnet route)
-- `WEBOS_APP_ID` — must match `appinfo.json` → `"id"`
+- `WEBOS_APP_ID` — your reverse-domain app ID (e.g.
+  `com.yourname.ambientphotos`); the workflow writes this into
+  `appinfo.json` → `"id"` at build time, and reuses it to relaunch the
+  app after install
+
+### c) Google OAuth credentials
+
+Add these two as repo secrets — the workflow writes them into `app.js`
+in place of the `CONFIG.CLIENT_ID` / `CONFIG.CLIENT_SECRET` placeholders
+right before packaging:
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
 
 Developer Mode sessions expire after a couple of days unless extended in
 the Developer Mode app on the TV; the derived key stops working once the

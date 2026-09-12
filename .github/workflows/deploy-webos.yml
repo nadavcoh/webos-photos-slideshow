@@ -57,6 +57,36 @@ jobs:
       - name: Install webOS CLI
         run: npm install -g @webosose/ares-cli
 
+      # ----------------------------------------------------------------
+      # Inject secrets into the source tree right before packaging, so
+      # the repo itself only ever contains placeholder values:
+      #   app.js       → CONFIG.CLIENT_ID / CONFIG.CLIENT_SECRET
+      #   appinfo.json → "id"
+      # Fails loudly if the placeholders have drifted (e.g. someone
+      # edited app.js and the literal strings no longer match).
+      # ----------------------------------------------------------------
+      - name: Inject config into app.js and appinfo.json
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          WEBOS_APP_ID: ${{ secrets.WEBOS_APP_ID }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const idPlaceholder = "YOUR_CLIENT_ID.apps.googleusercontent.com";
+            const secretPlaceholder = "YOUR_CLIENT_SECRET";
+            let js = fs.readFileSync("app.js", "utf8");
+            if (!js.includes(idPlaceholder) || !js.includes(secretPlaceholder)) {
+              console.error("Placeholder strings not found in app.js — did CONFIG.CLIENT_ID/CLIENT_SECRET change?");
+              process.exit(1);
+            }
+            js = js.split(idPlaceholder).join(process.env.GOOGLE_CLIENT_ID);
+            js = js.split(secretPlaceholder).join(process.env.GOOGLE_CLIENT_SECRET);
+            fs.writeFileSync("app.js", js);
+          '
+          jq --arg id "$WEBOS_APP_ID" '.id = $id' appinfo.json > appinfo.json.tmp
+          mv appinfo.json.tmp appinfo.json
+
       - name: Package ipk
         run: ares-package .
 
