@@ -141,6 +141,20 @@ scoped to write devices with `tag:ci`, and add these repo secrets:
 - `TS_OAUTH_CLIENT_ID`
 - `TS_OAUTH_SECRET`
 
+> **Troubleshooting `403: calling actor does not have enough permissions`**
+> This means the OAuth client has the wrong scope. It needs **Auth Keys:
+> Write** specifically (a distinct entry from "Devices" or "OAuth
+> clients" in the scope picker — easy to pick the wrong one). Also make
+> sure `tag:ci` exists in your ACL policy's `tagOwners` block before you
+> try to scope the client to it:
+> ```json
+> "tagOwners": {
+>   "tag:ci": ["autogroup:admin"]
+> }
+> ```
+> and that the tag selected on the OAuth client matches the `tags:`
+> value in the workflow exactly.
+
 ### b) TV pairing key
 
 Generate this once, locally, from a machine already on the same LAN as
