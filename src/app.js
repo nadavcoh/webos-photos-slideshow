@@ -6,11 +6,12 @@
  *      the pairing backend to refresh an access token silently and
  *      check whether that session still has media sources set.
  *   2. Otherwise run the pairing flow: show one QR code linking to
- *      the pairing backend's /api/start?state=<code>. That backend
- *      handles the full Google OAuth Authorization Code exchange
- *      (server-side, so the client secret never lives in this app),
- *      creates a Picker session, and hands both back to us once the
- *      user finishes on their phone. We poll /api/poll for this.
+ *      the pairing backend's /api/start?state=<code>&key=<shared
+ *      secret>. That backend handles the full Google OAuth
+ *      Authorization Code exchange (server-side, so the client secret
+ *      never lives in this app), creates a Picker session, and hands
+ *      both back to us once the user finishes on their phone. We poll
+ *      /api/poll for this.
  *   3. If the Picker session isn't done yet (mediaItemsSet false) —
  *      normally the phone is auto-redirected straight into it by the
  *      backend, but just in case, show a fallback QR/link to the
@@ -19,6 +20,13 @@
  *      start the slideshow. Base URLs (the actual image bytes)
  *      expire after ~60 minutes, so the media list is silently
  *      re-fetched on a timer without interrupting playback.
+ *
+ * CONFIG VALUES: loaded from window.APP_CONFIG if present (see
+ * secrets.local.js.example — copy it to secrets.local.js, gitignored,
+ * for local testing with `npx serve .` from this directory), else
+ * fall back to the placeholder strings below, which the GitHub Action
+ * substitutes at build time. Either way, nothing sensitive is
+ * committed to the repo.
  *
  * IMPORTANT — read the README before running this:
  *   Two other approaches were tried and rejected before landing here:
@@ -38,12 +46,20 @@
 
 /* ---------------------- CONFIG ---------------------- */
 
+const localConfig = (typeof window !== "undefined" && window.APP_CONFIG) || {};
+
 const CONFIG = {
   // Base URL of the deployed pairing-backend/ service, no trailing
-  // slash. This is the ONLY backend config this app needs — there is
-  // no Google client ID/secret in this file at all anymore; those
-  // live server-side in the pairing backend.
-  PAIRING_BACKEND_URL: "https://YOUR-PAIRING-BACKEND.vercel.app",
+  // slash. There is no Google client ID/secret in this file at all —
+  // those live server-side in the pairing backend.
+  PAIRING_BACKEND_URL: localConfig.PAIRING_BACKEND_URL || "https://YOUR-PAIRING-BACKEND.vercel.app",
+
+  // Shared secret required by /api/start, so a stranger who finds the
+  // backend's URL can't spin up OAuth consent flows against your
+  // Google Cloud project. This only raises the bar (anyone who
+  // extracts the packaged .ipk can read it back out) — it's not a
+  // substitute for keeping the backend URL itself out of casual reach.
+  PAIRING_SHARED_SECRET: localConfig.PAIRING_SHARED_SECRET || "YOUR_PAIRING_SHARED_SECRET",
 
   PAIRING_POLL_INTERVAL_MS: 3 * 1000,
   PAIRING_POLL_TIMEOUT_MS: 10 * 60 * 1000, // matches the backend's 10-minute KV entry TTL
@@ -63,8 +79,7 @@ const CONFIG = {
 
   // localStorage keys
   LS_REFRESH_TOKEN: "ambient_photos_refresh_token",
-  LS_DEVICE_ID: "ambient_photos_device_id",
-  LS_DEVICE_REQUEST_ID: "ambient_photos_device_request_id",
+  LS_PICKER_SESSION_ID: "ambient_photos_picker_session_id",
 };
 
 /* ---------------------- DOM ---------------------- */
@@ -173,9 +188,9 @@ async function runPairing() {
   el.connectStatus.textContent = "Preparing…";
 
   const pairingCode = uuidv4();
-  const startUrl = `${CONFIG.PAIRING_BACKEND_URL}/api/start?state=${pairingCode}`;
+  const startUrl = `${CONFIG.PAIRING_BACKEND_URL}/api/start?state=${pairingCode}&key=${encodeURIComponent(CONFIG.PAIRING_SHARED_SECRET)}`;
 
-  el.connectUrl.textContent = startUrl.replace(/^https?:\/\//, "");
+  el.connectUrl.textContent = startUrl.replace(/^https?:\/\//, "").split("&key=")[0];
   el.connectQr.innerHTML = "";
   // eslint-disable-next-line no-undef
   new QRCode(el.connectQr, { text: startUrl, width: 220, height: 220 });
@@ -233,14 +248,14 @@ async function ensureAccessToken() {
 }
 
 /* ============================================================
- * STEP B — Google Photos Ambient API
+ * STEP B — Google Photos Picker API
  * ============================================================ */
 
 async function getPickerSession(token, sessionId) {
   const res = await fetch(`${CONFIG.PICKER_SESSION_URL}/${sessionId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(`devices.get failed: ${res.status}`);
+  if (!res.ok) throw new Error(`Picker session lookup failed: ${res.status}`);
   return res.json();
 }
 
@@ -253,15 +268,15 @@ function pollPickerSession(token, sessionId, pollIntervalSeconds, timeoutMs) {
         reject(new Error("Timed out waiting for a photo selection."));
         return;
       }
-      let device;
+      let session;
       try {
-        device = await getAmbientDevice(token, deviceId);
+        session = await getPickerSession(token, sessionId);
       } catch (err) {
         setTimeout(poll, pollIntervalSeconds * 1000);
         return;
       }
-      if (device.mediaSourcesSet) {
-        resolve(device);
+      if (session.mediaItemsSet) {
+        resolve(session);
       } else {
         setTimeout(poll, pollIntervalSeconds * 1000);
       }
@@ -298,14 +313,14 @@ async function ensureSessionReady(token, sessionId) {
   el.mediaFallback.classList.add("hidden");
 }
 
-/** Fetches curated ambient media items for a device (paginated). */
-async function listAmbientMediaItems(token, deviceId) {
+/** Fetches every picked media item for a completed session (paginated). */
+async function listPickedMediaItems(token, sessionId) {
   const items = [];
   let pageToken = "";
 
   do {
-    const url = new URL(CONFIG.AMBIENT_MEDIA_ITEMS_URL);
-    url.searchParams.set("deviceId", deviceId);
+    const url = new URL(CONFIG.PICKER_MEDIA_ITEMS_URL);
+    url.searchParams.set("sessionId", sessionId);
     url.searchParams.set("pageSize", "100");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
@@ -317,7 +332,7 @@ async function listAmbientMediaItems(token, deviceId) {
     pageToken = body.nextPageToken || "";
   } while (pageToken && items.length < CONFIG.MAX_ITEMS_TO_LOAD);
 
-  // Photos only — skip any videos for a still-image ambient slideshow.
+  // Photos only — skip videos for a still-image ambient slideshow.
   return items.filter((item) => item.mediaFile?.mimeType?.startsWith("image/"));
 }
 
@@ -337,8 +352,9 @@ function fullResUrl(item) {
 }
 
 function formatDate(item) {
-  if (!item.createTime) return "";
-  const d = new Date(item.createTime);
+  const iso = item.mediaFile?.mediaFileMetadata?.creationTime || item.createTime;
+  if (!iso) return "";
+  const d = new Date(iso);
   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
@@ -383,7 +399,7 @@ function startSlideshow() {
 }
 
 /** Re-fetches the media list (fresh baseUrls) without interrupting playback. */
-function scheduleMediaListRefresh(deviceId) {
+function scheduleMediaListRefresh(sessionId) {
   setInterval(async () => {
     try {
       const token = await ensureAccessToken();
@@ -424,12 +440,12 @@ async function boot() {
       await ensureSessionReady(token, sessionId);
     }
 
-    mediaItems = await listAmbientMediaItems(token, deviceId);
+    mediaItems = await listPickedMediaItems(token, sessionId);
     if (mediaItems.length === 0) {
-      throw new Error("No photos were found for this device's media sources.");
+      throw new Error("No photos were found in the picker selection.");
     }
 
-    scheduleMediaListRefresh(deviceId);
+    scheduleMediaListRefresh(sessionId);
     startSlideshow();
   } catch (err) {
     console.error(err);

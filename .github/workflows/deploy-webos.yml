@@ -6,11 +6,11 @@ on:
   push:
     branches: [main]
     paths:
-      - "index.html"
-      - "app.js"
-      - "style.css"
-      - "appinfo.json"
-      - "icon.png"
+      - "src/index.html"
+      - "src/app.js"
+      - "src/style.css"
+      - "src/appinfo.json"
+      - "src/icon.png"
   workflow_dispatch: {}
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ----------------------------------------------------------------
       # 1. Join the tailnet so this runner can reach the TV's LAN address.
@@ -52,7 +52,7 @@ jobs:
       # 2. Package the app
       # ----------------------------------------------------------------
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
 
@@ -62,37 +62,49 @@ jobs:
       # ----------------------------------------------------------------
       # Inject secrets into the source tree right before packaging, so
       # the repo itself only ever contains placeholder values:
-      #   app.js       → CONFIG.PAIRING_BACKEND_URL
-      #   appinfo.json → "id"
+      #   src/app.js       → CONFIG.PAIRING_BACKEND_URL / PAIRING_SHARED_SECRET
+      #   src/appinfo.json → "id", "vendor"
       # There's no Google client ID/secret to inject here anymore —
       # those live only in the pairing-backend/ deployment's own env
       # vars (see pairing-backend/README.md), never in this app.
-      # Fails loudly if the placeholder has drifted (e.g. someone
-      # edited app.js and the literal string no longer matches).
+      # "vendor" is dropped in automatically from the repo owner, no
+      # secret needed for it.
+      # Fails loudly if a placeholder has drifted (e.g. someone edited
+      # app.js and the literal strings no longer match).
       # ----------------------------------------------------------------
       - name: Inject config into app.js and appinfo.json
         env:
           PAIRING_BACKEND_URL: ${{ secrets.PAIRING_BACKEND_URL }}
+          PAIRING_SHARED_SECRET: ${{ secrets.PAIRING_SHARED_SECRET }}
           WEBOS_APP_ID: ${{ secrets.WEBOS_APP_ID }}
+          WEBOS_VENDOR: ${{ github.repository_owner }}
         run: |
           node -e '
             const fs = require("fs");
-            const placeholder = "https://YOUR-PAIRING-BACKEND.vercel.app";
+            const replacements = {
+              "https://YOUR-PAIRING-BACKEND.vercel.app": process.env.PAIRING_BACKEND_URL,
+              "YOUR_PAIRING_SHARED_SECRET": process.env.PAIRING_SHARED_SECRET,
+            };
             let js = fs.readFileSync("src/app.js", "utf8");
-            if (!js.includes(placeholder)) {
-              console.error("Placeholder not found in app.js — did CONFIG.PAIRING_BACKEND_URL change?");
-              process.exit(1);
+            for (const [placeholder, value] of Object.entries(replacements)) {
+              if (!js.includes(placeholder)) {
+                console.error(`Placeholder not found in app.js: ${placeholder} — did CONFIG change?`);
+                process.exit(1);
+              }
+              js = js.split(placeholder).join(value);
             }
-            js = js.split(placeholder).join(process.env.PAIRING_BACKEND_URL);
             fs.writeFileSync("src/app.js", js);
           '
-          jq --arg id "$WEBOS_APP_ID" '.id = $id' src/appinfo.json > src/appinfo.json.tmp
+          jq --arg id "$WEBOS_APP_ID" --arg vendor "$WEBOS_VENDOR" \
+            '.id = $id | .vendor = $vendor' src/appinfo.json > src/appinfo.json.tmp
           mv src/appinfo.json.tmp src/appinfo.json
 
       - name: Package ipk
         run: >
           ares-package src
           --no-minify
+          --app-exclude secrets.local.js
+          --app-exclude secrets.local.js.example
 
       - name: Locate built ipk
         id: ipk
@@ -101,10 +113,12 @@ jobs:
       # ----------------------------------------------------------------
       # 3. Register the TV as a deploy target and install
       #
-      #    Auth uses a novacom SSH keypair generated once, locally, via:
-      #      ares-novacom --device <name> --getkey --passphrase <passphrase-from-TV>
-      #    then base64 it and store as the WEBOS_TV_SSH_KEY_B64 secret:
-      #      base64 -i ~/.novacom-cert/<name>/webos_rsa | pbcopy
+      #    Auth uses a novacom SSH keypair generated once, locally, via
+      #    ares-setup-device + ares-novacom --getkey (see README.md for
+      #    the exact commands and current key path — @webos-tools/cli
+      #    stores it under ~/.ssh/<device-name>/webos_rsa, not the old
+      #    ~/.novacom-cert/ path from earlier ares-cli versions), then
+      #    base64'd into the WEBOS_TV_SSH_KEY_B64 secret below.
       #    Developer Mode's passphrase itself expires quickly, but the
       #    derived private key keeps working as long as Developer Mode
       #    stays active/extended on the TV (re-extend it every couple of

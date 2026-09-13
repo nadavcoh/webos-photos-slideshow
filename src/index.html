@@ -64,6 +64,14 @@
 
   <!-- Tiny QR renderer -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- Local-only overrides for PAIRING_BACKEND_URL / PAIRING_SHARED_SECRET
+       when testing with `npx serve .`. Copy secrets.local.js.example to
+       secrets.local.js (gitignored) and fill in real values. Harmlessly
+       404s if that file doesn't exist — app.js just falls back to its
+       placeholder strings, which the GitHub Action fills in for real
+       builds. Never packaged into the .ipk (see the ares-package
+       --app-exclude flags in README.md). -->
+  <script src="secrets.local.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

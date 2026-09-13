@@ -7,11 +7,13 @@ pairing codes. Four serverless functions, no framework, no build step.
 
 ## Endpoints
 
-- `GET /api/start?state=<code>` — redirects the phone to Google's
-  consent screen.
-- `GET /api/callback` — Google redirects here after consent; exchanges
-  the code for tokens, creates a Picker session, stashes both in KV
-  keyed by `state`, then redirects the phone straight into the picker.
+- `GET /api/start?state=<code>&key=<shared secret>` — redirects the
+  phone to Google's consent screen. Refuses (403) unless `key` matches
+  `PAIRING_SHARED_SECRET` — see **Security notes** below.
+- `GET /api/callback` — Google redirects here after consent; verifies
+  the signed `state`, exchanges the code for tokens, creates a Picker
+  session, stashes both in KV keyed by the pairing code, then redirects
+  the phone straight into the picker.
 - `GET /api/poll?state=<code>` — the TV polls this until pairing
   completes (202 while waiting, 200 with tokens once ready, single-use).
 - `POST /api/refresh` — the TV calls this to refresh its access token
@@ -47,18 +49,43 @@ pairing codes. Four serverless functions, no framework, no build step.
    - `GOOGLE_CLIENT_SECRET`
    - `GOOGLE_REDIRECT_URI` = `https://your-project.vercel.app/api/callback`
      (must match step 4 exactly, including scheme and no trailing slash)
+   - `PAIRING_SHARED_SECRET` — any long random string you generate
+     yourself, e.g. `openssl rand -hex 32`. This is what stops a
+     stranger who finds your `.vercel.app` URL from starting OAuth
+     consent flows against your Google Cloud project — see **Security
+     notes**.
 7. Redeploy after adding the env vars so the functions pick them up.
 8. Put the resulting base URL (`https://your-project.vercel.app`, no
-   trailing slash) into the TV app's `CONFIG.PAIRING_BACKEND_URL` in
-   `app.js` (or inject it via the GitHub Action — see the main README).
+   trailing slash) and the `PAIRING_SHARED_SECRET` value into the TV
+   app's config — either `src/secrets.local.js` for local testing, or
+   the `PAIRING_BACKEND_URL` / `PAIRING_SHARED_SECRET` GitHub repo
+   secrets for automated deploys. See the main README.
 
 ## Security notes
 
-- The `state` pairing code is the only thing standing between "the TV
-  that generated it" and "whoever calls /api/poll with it" — treat it
-  like a short-lived bearer credential. It's random (via the TV's
-  `uuidv4()`), single-use (deleted on first successful poll), and
-  expires after 10 minutes in KV even if never collected.
+- **`PAIRING_SHARED_SECRET`** gates `/api/start`: without the matching
+  `key` query param, the endpoint refuses outright (403) before it ever
+  redirects to Google. The secret is also used to HMAC-sign the `state`
+  value handed to Google, and `/api/callback` verifies that signature
+  before doing anything — so even someone who copies your public
+  `client_id` and hits Google's consent screen directly, skipping
+  `/api/start` entirely, can't produce a `state` that `/api/callback`
+  will accept. Together these stop casual/automated discovery of your
+  backend's public URL from being usable to spin up consent flows
+  against your Google Cloud project (burning quota, or looking like
+  abuse to Google at volume).
+
+  Caveat: this secret ships inside the packaged TV app, same as any
+  client-side secret — someone with your actual `.ipk` file could
+  extract it. It raises the bar against casual/remote discovery; it's
+  not a defense against someone who already has physical access to
+  your TV.
+- The `state` pairing code (the part before `PAIRING_SHARED_SECRET`
+  gets involved) is itself the only thing standing between "the TV that
+  generated it" and "whoever calls /api/poll with it" — treat it like a
+  short-lived bearer credential. It's random (via the TV's `uuidv4()`),
+  single-use (deleted on first successful poll), and expires after 10
+  minutes in KV even if never collected.
 - The client secret only ever exists in this backend's environment
   variables — it's never sent to, or stored by, the TV app.
 - `prompt=consent` on every `/api/start` redirect means re-pairing
