@@ -57,7 +57,7 @@ jobs:
           node-version: "24"
 
       - name: Install webOS CLI
-        run: npm install -g @webosose/ares-cli
+        run: npm install -g @webos-tools/cli
 
       # ----------------------------------------------------------------
       # Inject secrets into the source tree right before packaging, so
