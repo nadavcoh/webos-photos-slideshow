@@ -133,8 +133,8 @@ jobs:
       - name: Install to TV
         run: ares-install -d livingroom-tv "${{ steps.ipk.outputs.path }}"
 
-      - name: Relaunch app
-        run: ares-launch -d livingroom-tv "${{ secrets.WEBOS_APP_ID }}"
+      # - name: Relaunch app
+      #   run: ares-launch -d livingroom-tv "${{ secrets.WEBOS_APP_ID }}"
 
 # ----------------------------------------------------------------------
 # Alternative if you don't want to run a subnet router: self-host the
