@@ -57,8 +57,43 @@ jobs:
       - name: Install webOS CLI
         run: npm install -g @webosose/ares-cli
 
+      # ----------------------------------------------------------------
+      # Inject secrets into the source tree right before packaging, so
+      # the repo itself only ever contains placeholder values:
+      #   app.js       → CONFIG.PAIRING_BACKEND_URL
+      #   appinfo.json → "id"
+      # There's no Google client ID/secret to inject here anymore —
+      # those live only in the pairing-backend/ deployment's own env
+      # vars (see pairing-backend/README.md), never in this app.
+      # Fails loudly if the placeholder has drifted (e.g. someone
+      # edited app.js and the literal string no longer matches).
+      # ----------------------------------------------------------------
+      - name: Inject config into app.js and appinfo.json
+        env:
+          PAIRING_BACKEND_URL: ${{ secrets.PAIRING_BACKEND_URL }}
+          WEBOS_APP_ID: ${{ secrets.WEBOS_APP_ID }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const placeholder = "https://YOUR-PAIRING-BACKEND.vercel.app";
+            let js = fs.readFileSync("app.js", "utf8");
+            if (!js.includes(placeholder)) {
+              console.error("Placeholder not found in app.js — did CONFIG.PAIRING_BACKEND_URL change?");
+              process.exit(1);
+            }
+            js = js.split(placeholder).join(process.env.PAIRING_BACKEND_URL);
+            fs.writeFileSync("app.js", js);
+          '
+          jq --arg id "$WEBOS_APP_ID" '.id = $id' appinfo.json > appinfo.json.tmp
+          mv appinfo.json.tmp appinfo.json
+
       - name: Package ipk
-        run: ares-package .
+        run: >
+          ares-package .
+          --app-exclude pairing-backend
+          --app-exclude .github
+          --app-exclude .git
+          --app-exclude README.md
 
       - name: Locate built ipk
         id: ipk
