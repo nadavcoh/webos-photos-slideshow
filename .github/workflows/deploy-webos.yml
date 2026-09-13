@@ -91,11 +91,7 @@ jobs:
 
       - name: Package ipk
         run: >
-          ares-package .
-          --app-exclude pairing-backend
-          --app-exclude .github
-          --app-exclude .git
-          --app-exclude README.md
+          ares-package src
           --no-minify
 
       - name: Locate built ipk
