@@ -63,7 +63,8 @@ const CONFIG = {
 
   // localStorage keys
   LS_REFRESH_TOKEN: "ambient_photos_refresh_token",
-  LS_PICKER_SESSION_ID: "ambient_photos_picker_session_id",
+  LS_DEVICE_ID: "ambient_photos_device_id",
+  LS_DEVICE_REQUEST_ID: "ambient_photos_device_request_id",
 };
 
 /* ---------------------- DOM ---------------------- */
@@ -232,14 +233,14 @@ async function ensureAccessToken() {
 }
 
 /* ============================================================
- * STEP B — Google Photos Picker API
+ * STEP B — Google Photos Ambient API
  * ============================================================ */
 
 async function getPickerSession(token, sessionId) {
   const res = await fetch(`${CONFIG.PICKER_SESSION_URL}/${sessionId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(`Picker session lookup failed: ${res.status}`);
+  if (!res.ok) throw new Error(`devices.get failed: ${res.status}`);
   return res.json();
 }
 
@@ -252,15 +253,15 @@ function pollPickerSession(token, sessionId, pollIntervalSeconds, timeoutMs) {
         reject(new Error("Timed out waiting for a photo selection."));
         return;
       }
-      let session;
+      let device;
       try {
-        session = await getPickerSession(token, sessionId);
+        device = await getAmbientDevice(token, deviceId);
       } catch (err) {
         setTimeout(poll, pollIntervalSeconds * 1000);
         return;
       }
-      if (session.mediaItemsSet) {
-        resolve(session);
+      if (device.mediaSourcesSet) {
+        resolve(device);
       } else {
         setTimeout(poll, pollIntervalSeconds * 1000);
       }
@@ -297,14 +298,14 @@ async function ensureSessionReady(token, sessionId) {
   el.mediaFallback.classList.add("hidden");
 }
 
-/** Fetches every picked media item for a completed session (paginated). */
-async function listPickedMediaItems(token, sessionId) {
+/** Fetches curated ambient media items for a device (paginated). */
+async function listAmbientMediaItems(token, deviceId) {
   const items = [];
   let pageToken = "";
 
   do {
-    const url = new URL(CONFIG.PICKER_MEDIA_ITEMS_URL);
-    url.searchParams.set("sessionId", sessionId);
+    const url = new URL(CONFIG.AMBIENT_MEDIA_ITEMS_URL);
+    url.searchParams.set("deviceId", deviceId);
     url.searchParams.set("pageSize", "100");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
@@ -316,7 +317,7 @@ async function listPickedMediaItems(token, sessionId) {
     pageToken = body.nextPageToken || "";
   } while (pageToken && items.length < CONFIG.MAX_ITEMS_TO_LOAD);
 
-  // Photos only — skip videos for a still-image ambient slideshow.
+  // Photos only — skip any videos for a still-image ambient slideshow.
   return items.filter((item) => item.mediaFile?.mimeType?.startsWith("image/"));
 }
 
@@ -336,9 +337,8 @@ function fullResUrl(item) {
 }
 
 function formatDate(item) {
-  const iso = item.mediaFile?.mediaFileMetadata?.creationTime || item.createTime;
-  if (!iso) return "";
-  const d = new Date(iso);
+  if (!item.createTime) return "";
+  const d = new Date(item.createTime);
   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
@@ -383,7 +383,7 @@ function startSlideshow() {
 }
 
 /** Re-fetches the media list (fresh baseUrls) without interrupting playback. */
-function scheduleMediaListRefresh(sessionId) {
+function scheduleMediaListRefresh(deviceId) {
   setInterval(async () => {
     try {
       const token = await ensureAccessToken();
@@ -424,12 +424,12 @@ async function boot() {
       await ensureSessionReady(token, sessionId);
     }
 
-    mediaItems = await listPickedMediaItems(token, sessionId);
+    mediaItems = await listAmbientMediaItems(token, deviceId);
     if (mediaItems.length === 0) {
-      throw new Error("No photos were found in the picker selection.");
+      throw new Error("No photos were found for this device's media sources.");
     }
 
-    scheduleMediaListRefresh(sessionId);
+    scheduleMediaListRefresh(deviceId);
     startSlideshow();
   } catch (err) {
     console.error(err);

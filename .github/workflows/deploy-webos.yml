@@ -40,11 +40,13 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          tags: tag:github-actions
           version: latest
 
       - name: Confirm the TV is reachable
-        run: tailscale ping --c 2 "${{ secrets.WEBOS_TV_HOST }}"
+        run: tailscale ping --c 2 --until-direct=false "${{ secrets.WEBOS_TV_HOST }}"
+      - name: Confirm the TV is reachable
+        run: ping -c 2 "${{ secrets.WEBOS_TV_HOST }}"
 
       # ----------------------------------------------------------------
       # 2. Package the app
@@ -52,7 +54,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install webOS CLI
         run: npm install -g @webosose/ares-cli
@@ -94,6 +96,7 @@ jobs:
           --app-exclude .github
           --app-exclude .git
           --app-exclude README.md
+          --no-minify
 
       - name: Locate built ipk
         id: ipk
@@ -113,14 +116,19 @@ jobs:
       # ----------------------------------------------------------------
       - name: Restore novacom key
         run: |
-          mkdir -p "$HOME/.webos-ci-key"
-          echo "${{ secrets.WEBOS_TV_SSH_KEY_B64 }}" | base64 -d > "$HOME/.webos-ci-key/webos_rsa"
-          chmod 600 "$HOME/.webos-ci-key/webos_rsa"
+          mkdir -p "$HOME/.ssh"
+          echo "${{ secrets.WEBOS_TV_SSH_KEY_B64 }}" | base64 -d > "$HOME/.ssh/webos_rsa"
+          chmod 600 "$HOME/.ssh/webos_rsa"
 
       - name: Register TV device profile
-        run: |
-          ares-setup-device --add livingroom-tv --info \
-            "{\"host\":\"${{ secrets.WEBOS_TV_HOST }}\",\"port\":\"9922\",\"username\":\"prisoner\",\"privateKey\":\"$HOME/.webos-ci-key/webos_rsa\"}"
+        run: |  
+          ares-setup-device --add livingroom-tv \
+            -i "host=${{ secrets.WEBOS_TV_HOST }}" \
+            -i "port=9922" \
+            -i "username=prisoner" \
+            -i "privatekey=webos_rsa" \
+            -i "passphrase=${{ secrets.TV_PASSPHRASE }}"
+          ares-setup-device --listfull
 
       - name: Install to TV
         run: ares-install -d livingroom-tv "${{ steps.ipk.outputs.path }}"
