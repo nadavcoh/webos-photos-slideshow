@@ -10,35 +10,33 @@
 
   <!-- ============================================================
        PAIRING SCREEN
-       Shown on first run (no stored refresh token) and again if a
-       token becomes invalid. Two steps are shown in sequence:
-       1) Google sign-in via the Device Authorization Grant
-       2) Ambient API device setup, so the user can choose the
-          photos/albums this TV should display
+       Shown on first run (no stored refresh token / Picker session)
+       and again if either becomes invalid. One QR takes the user
+       through sign-in AND photo selection in one continuous phone
+       flow (handled by the pairing-backend/ service); a fallback QR
+       appears only if we already have a Picker session that isn't
+       finished yet, e.g. the phone's auto-redirect into the picker
+       didn't happen.
        ============================================================ -->
   <div id="pairing-screen" class="screen hidden">
     <div class="pairing-card">
       <h1 class="pairing-title">Ambient Photos</h1>
 
-      <!-- Step 1: account sign-in -->
-      <div id="pairing-step-signin" class="pairing-step">
+      <div id="pairing-step-connect" class="pairing-step">
         <p class="pairing-instructions">
-          On your phone or computer, go to
+          On your phone, scan this to sign in and choose photos:
         </p>
-        <p class="pairing-url" id="signin-url">google.com/device</p>
-        <p class="pairing-instructions">and enter this code:</p>
-        <p class="pairing-code" id="signin-code">— — — — —</p>
-        <p class="pairing-status" id="signin-status">Waiting for sign-in&hellip;</p>
+        <div id="connect-qr" class="pairing-qr"></div>
+        <p class="pairing-url" id="connect-url">&nbsp;</p>
+        <p class="pairing-status" id="connect-status">Preparing&hellip;</p>
       </div>
 
-      <!-- Step 2: choose media sources via the Ambient API device settings -->
-      <div id="pairing-step-media" class="pairing-step hidden">
+      <div id="pairing-step-media-fallback" class="pairing-step hidden">
         <p class="pairing-instructions">
-          Now choose the photos to display. On your phone, open:
+          Still need to pick your photos? Open this on your phone:
         </p>
-        <p class="pairing-url" id="media-url">&nbsp;</p>
         <div id="media-qr" class="pairing-qr"></div>
-        <p class="pairing-status" id="media-status">Waiting for photo selection&hellip;</p>
+        <p class="pairing-url" id="media-url">&nbsp;</p>
       </div>
 
       <div id="pairing-error" class="pairing-error hidden"></div>
@@ -64,7 +62,7 @@
     <div class="boot-spinner"></div>
   </div>
 
-  <!-- Tiny QR renderer, used only for the Ambient device settings URL -->
+  <!-- Tiny QR renderer -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="app.js"></script>
 </body>

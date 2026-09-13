@@ -1,82 +1,77 @@
 # Ambient Photos — webOS TV slideshow
 
-## ⚠️ Read this first: two other Google Photos APIs were tried and rejected
+## ⚠️ Read this first: two other approaches were tried and rejected
 
 Your original spec called for `mediaItems:search` filtered by album or
 favorite status. As of **April 1, 2025**, Google removed that capability
 for the `photoslibrary.readonly` scope — the Library API now only returns
 items an app *itself* uploaded.
 
-The obvious next choice, the **Photos Picker API**, turns out not to work
-here either: its scope (`photospicker.mediaitems.readonly`) isn't on
-Google's allow-list of scopes for the OAuth Device Authorization Grant —
-requesting it returns `invalid_scope`, full stop.
+The next candidate, the **Photos Ambient API**, is purpose-built for
+exactly this use case (a persistent "device" with an ongoing curated
+feed, no re-picking) — but it requires acceptance into Google's **Photos
+Partner Program** first. That's a formal application aimed at device
+manufacturers, not a self-serve API, so it's a dead end for a personal
+project unless you want to go apply for it separately.
 
-What actually works, and what this app uses, is the **Photos Ambient
-API** — a scope (`photosambient.mediaitems`) purpose-built by Google for
-exactly this use case: ambient photo displays on TVs and screensavers.
-It's arguably a better fit than either alternative: the device shows a
-link/QR code, the user picks albums/photos on their phone in the Google
-Photos app once, and Google Photos then serves an ongoing *curated feed*
-from those sources — no repeated re-picking sessions to manage.
+What this app actually uses is the **Photos Picker API**, which needs no
+partner approval. Its catch: the scope
+(`photospicker.mediaitems.readonly`) isn't on Google's allow-list for the
+OAuth **Device Authorization Grant** (the TV-shows-a-code flow) —
+requesting it there returns `invalid_scope`. Getting that scope requires
+a standard **Authorization Code** flow with a real HTTPS redirect URI,
+which a TV app alone can't provide. So this app talks to a small
+**pairing backend** (in `pairing-backend/`) instead of Google directly
+for anything auth-related — see that folder's own README for what it
+does and how to deploy it. The end-user experience is unchanged: one QR
+code on the TV, sign in and pick photos on your phone.
 
 ## Directory layout
 
 ```
 webos-photos-slideshow/
-├── appinfo.json      ← webOS app manifest
-├── icon.png           ← 80x80 app icon (placeholder — swap for your own)
-├── index.html         ← markup for pairing screen + slideshow
-├── style.css           ← dark-mode lean-back styling, crossfade CSS
-└── app.js              ← OAuth device flow, Ambient API flow, slideshow engine
+├── appinfo.json          ← webOS app manifest
+├── icon.png               ← 80x80 app icon (placeholder — swap for your own)
+├── index.html             ← markup for pairing screen + slideshow
+├── style.css               ← dark-mode lean-back styling, crossfade CSS
+├── app.js                  ← pairing-backend client, Picker API flow, slideshow engine
+├── .github/workflows/      ← GitHub Action: package + deploy to the TV over Tailscale
+└── pairing-backend/        ← small Vercel service — NOT packaged into the TV app
 ```
 
-Everything is plain HTML/CSS/JS — no build step, no bundler. This directory
-is exactly what you hand to `ares-package`.
+Everything under the top level (outside `pairing-backend/`) is plain
+HTML/CSS/JS — no build step, no bundler. That's what gets handed to
+`ares-package` (the GitHub Action excludes `pairing-backend/`, `.github/`,
+and `README.md` from the `.ipk` automatically).
 
-## 1. Google Cloud project setup
+## 0. Deploy the pairing backend
 
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and
-   create a new project (or pick an existing one).
-2. **APIs & Services → Library** → enable:
-   - **Google Photos Ambient API**
-3. **APIs & Services → OAuth consent screen** → configure it (External is
-   fine for personal use; add your own Google account as a test user if
-   the app stays in "Testing" mode, which is fine for a personal device).
-4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**
-   → Application type: **TVs and Limited Input devices**.
-   This is what enables the Device Authorization Grant used in `app.js`.
-5. Copy the generated **Client ID** and **Client Secret** into
-   `app.js` → `CONFIG.CLIENT_ID` / `CONFIG.CLIENT_SECRET`.
+Do this first — the TV app needs its URL. Full instructions are in
+[`pairing-backend/README.md`](pairing-backend/README.md): create a
+**Web application** OAuth client (not "TVs and Limited Input devices"),
+enable the Photos Picker API, deploy the four functions to Vercel with a
+KV database attached, and note the resulting `https://....vercel.app`
+URL.
 
-   Note: for this credential type Google does issue a client secret, and
-   TV apps are expected to ship it client-side (there's no way for a
-   limited-input device to keep it confidential). Keep the OAuth consent
-   screen in "Testing" mode with only your own account as a tester so the
-   blast radius of that secret leaking is limited to your own data.
+## 1. Configure the app
 
-   Also note: before your app is Google-verified, you'll see an
-   "unverified app" warning on the consent screen during sign-in — expected
-   in Testing mode, just click through it (Advanced → Go to [app name]).
-
-## 2. Configure the app
-
-**If you're deploying via the GitHub Action (section 6 below), skip this
-step** — leave the placeholders in `app.js` and `appinfo.json` as they
-are. The workflow substitutes them from repo secrets at build time, so
-your real Client ID/Secret and app ID never need to touch the repo.
+**If you're deploying via the GitHub Action (section 4 below), skip
+this** — leave the placeholder in `app.js` as-is; the workflow
+substitutes it from a repo secret at build time.
 
 For manual/local packaging instead, open `app.js` and fill in:
 
 ```js
-CLIENT_ID: "YOUR_CLIENT_ID.apps.googleusercontent.com",
-CLIENT_SECRET: "YOUR_CLIENT_SECRET",
+PAIRING_BACKEND_URL: "https://your-pairing-backend.vercel.app",
 ```
 
 Also update `appinfo.json` → `"id"` to your own reverse-domain app ID
 (e.g. `com.yourname.ambientphotos`) and `"vendor"` to your name.
 
-## 3. Install the webOS CLI (on your dev machine, not the TV)
+There is no Google client ID/secret anywhere in this app — those live
+only in the pairing backend's own environment variables.
+
+## 2. Install the webOS CLI (on your dev machine, not the TV)
 
 ```bash
 npm install -g @webosose/ares-cli
@@ -92,12 +87,12 @@ ares-setup-device
 # port 9922, and the passphrase shown in the Developer Mode app
 ```
 
-## 4. Package and install
+## 3. Package and install
 
 From the parent directory of `webos-photos-slideshow/`:
 
 ```bash
-ares-package webos-photos-slideshow/
+ares-package webos-photos-slideshow/ --app-exclude pairing-backend --app-exclude .github --app-exclude .git --app-exclude README.md
 # produces com.yourdomain.ambientphotos_1.0.0_all.ipk
 
 ares-install -d livingroom-tv com.yourdomain.ambientphotos_1.0.0_all.ipk
@@ -108,24 +103,23 @@ ares-launch -d livingroom-tv com.yourdomain.ambientphotos
 To iterate quickly during development, `ares-install` again after each
 `ares-package` — no need to relaunch Developer Mode each time.
 
-## 5. First run on the TV
+### First run on the TV
 
-1. The app shows a sign-in code and `google.com/device` — enter it on
-   your phone/PC and approve access.
-2. It then shows a QR code / link to this device's **Google Photos
-   settings page** — scan it (or open the link) on your phone, choose the
-   albums or photos you want this TV to draw from, and confirm.
-3. The slideshow starts automatically and keeps running; the curated
-   media list is silently refreshed every 50 minutes to keep image URLs
-   (which expire hourly) valid. The refresh token and this device's id
-   are stored in `localStorage`, so a reboot skips both steps above —
-   reopen the settings link any time (from Google Photos app settings)
-   if you want to change the selected sources.
+1. The app shows one QR code / link. Scan it (or open the link) on your
+   phone — it takes you through Google sign-in and then straight into
+   the Photos Picker to choose albums/photos, back to back.
+2. The slideshow starts automatically once you finish picking, and keeps
+   running; the picked-item list is silently refreshed every 50 minutes
+   to keep image URLs (which expire hourly) valid. The refresh token and
+   Picker session id are stored in `localStorage`, so a reboot skips
+   pairing entirely — until that session eventually needs re-picking
+   (Picker sessions aren't indefinite), at which point the same QR flow
+   reappears automatically.
 
-## 6. Automatic deploys via GitHub Actions (`.github/workflows/deploy-webos.yml`)
+## 4. Automatic deploys via GitHub Actions (`.github/workflows/deploy-webos.yml`)
 
 The workflow packages the app, joins your tailnet, and pushes the result
-straight to the TV on every push to `main`. Two things to set up first:
+straight to the TV on every push to `main`. Three things to set up first:
 
 ### a) Tailscale reachability
 
@@ -181,30 +175,32 @@ Add these repo secrets:
   `appinfo.json` → `"id"` at build time, and reuses it to relaunch the
   app after install
 
-### c) Google OAuth credentials
-
-Add these two as repo secrets — the workflow writes them into `app.js`
-in place of the `CONFIG.CLIENT_ID` / `CONFIG.CLIENT_SECRET` placeholders
-right before packaging:
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-
 Developer Mode sessions expire after a couple of days unless extended in
 the Developer Mode app on the TV; the derived key stops working once the
 session lapses and you'll need to regenerate it via the two commands
 above with a fresh passphrase.
+
+### c) Pairing backend URL
+
+Add one repo secret — the workflow writes it into `app.js` in place of
+the `CONFIG.PAIRING_BACKEND_URL` placeholder right before packaging:
+- `PAIRING_BACKEND_URL` — e.g. `https://your-pairing-backend.vercel.app`
+  (no trailing slash), from step 0
+
+There's no Google client ID/secret to add here — those belong to the
+pairing backend's *own* Vercel project env vars, set up separately per
+`pairing-backend/README.md`, and this GitHub Action never touches them.
 
 ## Notes / things to adjust for your setup
 
 - **15-second crossfade timing** lives in `CONFIG.SLIDE_INTERVAL_MS` and
   the CSS `--transition-duration` variable in `style.css`.
 - **Image count cap** (`CONFIG.MAX_ITEMS_TO_LOAD`) guards against loading
-  an enormous curated feed into memory at once — the Ambient API caps
-  each page at 100 items anyway, matching this default.
-- **Rate limit**: `mediaItems.list` is capped at 240 requests per device
-  per day by Google. The 50-minute refresh interval works out to well
-  under that on its own; only lower `MEDIA_LIST_REFRESH_MS` with that
-  ceiling in mind.
+  an enormous picked album into memory at once; raise it if you picked a
+  large album and want the full set in rotation.
+- **Pairing timeout**: `CONFIG.PAIRING_POLL_TIMEOUT_MS` (10 minutes)
+  matches the pairing backend's KV entry TTL — if you change one, change
+  the other (`ex: 600` in `pairing-backend/api/callback.js`).
 - webOS's browser engine is Chromium-based and modern enough for all the
   `fetch`/`async`/`URLSearchParams` used here, but if you're targeting a
   very old webOS 4 firmware revision, test on the actual TV early —

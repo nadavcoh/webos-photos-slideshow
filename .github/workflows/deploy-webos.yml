@@ -62,35 +62,41 @@ jobs:
       # ----------------------------------------------------------------
       # Inject secrets into the source tree right before packaging, so
       # the repo itself only ever contains placeholder values:
-      #   app.js       → CONFIG.CLIENT_ID / CONFIG.CLIENT_SECRET
+      #   app.js       → CONFIG.PAIRING_BACKEND_URL
       #   appinfo.json → "id"
-      # Fails loudly if the placeholders have drifted (e.g. someone
-      # edited app.js and the literal strings no longer match).
+      # There's no Google client ID/secret to inject here anymore —
+      # those live only in the pairing-backend/ deployment's own env
+      # vars (see pairing-backend/README.md), never in this app.
+      # Fails loudly if the placeholder has drifted (e.g. someone
+      # edited app.js and the literal string no longer matches).
       # ----------------------------------------------------------------
       - name: Inject config into app.js and appinfo.json
         env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          PAIRING_BACKEND_URL: ${{ secrets.PAIRING_BACKEND_URL }}
           WEBOS_APP_ID: ${{ secrets.WEBOS_APP_ID }}
         run: |
           node -e '
             const fs = require("fs");
-            const idPlaceholder = "YOUR_CLIENT_ID.apps.googleusercontent.com";
-            const secretPlaceholder = "YOUR_CLIENT_SECRET";
+            const placeholder = "https://YOUR-PAIRING-BACKEND.vercel.app";
             let js = fs.readFileSync("app.js", "utf8");
-            if (!js.includes(idPlaceholder) || !js.includes(secretPlaceholder)) {
-              console.error("Placeholder strings not found in app.js — did CONFIG.CLIENT_ID/CLIENT_SECRET change?");
+            if (!js.includes(placeholder)) {
+              console.error("Placeholder not found in app.js — did CONFIG.PAIRING_BACKEND_URL change?");
               process.exit(1);
             }
-            js = js.split(idPlaceholder).join(process.env.GOOGLE_CLIENT_ID);
-            js = js.split(secretPlaceholder).join(process.env.GOOGLE_CLIENT_SECRET);
+            js = js.split(placeholder).join(process.env.PAIRING_BACKEND_URL);
             fs.writeFileSync("app.js", js);
           '
           jq --arg id "$WEBOS_APP_ID" '.id = $id' appinfo.json > appinfo.json.tmp
           mv appinfo.json.tmp appinfo.json
 
       - name: Package ipk
-        run: ares-package --no-minify .
+        run: >
+          ares-package .
+          --app-exclude pairing-backend
+          --app-exclude .github
+          --app-exclude .git
+          --app-exclude README.md
+          --no-minify
 
       - name: Locate built ipk
         id: ipk

@@ -2,67 +2,64 @@
  * Ambient Photos — app.js
  *
  * Flow:
- *   1. If we have a stored refresh token, use it to get an
- *      access token silently and skip straight to the device
- *      check / slideshow.
- *   2. Otherwise run the OAuth 2.0 Device Authorization Grant
- *      so the TV shows a code the user enters on google.com/device.
- *   3. Once signed in, if we don't yet have an Ambient API device
- *      with media sources configured, create one and show its
- *      settings URL + a QR code so the user can pick albums/photos
- *      on their phone.
+ *   1. If we have a stored refresh token AND Picker session id, use
+ *      the pairing backend to refresh an access token silently and
+ *      check whether that session still has media sources set.
+ *   2. Otherwise run the pairing flow: show one QR code linking to
+ *      the pairing backend's /api/start?state=<code>. That backend
+ *      handles the full Google OAuth Authorization Code exchange
+ *      (server-side, so the client secret never lives in this app),
+ *      creates a Picker session, and hands both back to us once the
+ *      user finishes on their phone. We poll /api/poll for this.
+ *   3. If the Picker session isn't done yet (mediaItemsSet false) —
+ *      normally the phone is auto-redirected straight into it by the
+ *      backend, but just in case, show a fallback QR/link to the
+ *      session's own pickerUri and keep polling.
  *   4. Once media sources are set, list curated media items and
  *      start the slideshow. Base URLs (the actual image bytes)
  *      expire after ~60 minutes, so the media list is silently
  *      re-fetched on a timer without interrupting playback.
  *
  * IMPORTANT — read the README before running this:
- *   Two Google Photos APIs were tried and rejected before landing
- *   here, in case you're comparing against older notes:
- *     - `mediaItems:search` (Library API) stopped supporting
- *       general library search on April 1, 2025.
- *     - The Picker API's scope
- *       (photospicker.mediaitems.readonly) is NOT on Google's
- *       allow-list for the Device Authorization Grant used here —
- *       requesting it returns `invalid_scope`.
- *   The **Ambient API** (scope: photosambient.mediaitems) is
- *   purpose-built for ambient displays like this one, its scope
- *   IS allowed over the device flow, and it gives a persistent
- *   "device" with an ongoing curated feed instead of a one-shot
- *   picker session. See README.md for full setup steps.
+ *   Two other approaches were tried and rejected before landing here:
+ *     - `mediaItems:search` (Library API) stopped supporting general
+ *       library search on April 1, 2025.
+ *     - The Photos Ambient API (a better architectural fit — a
+ *       persistent device + ongoing curated feed) requires acceptance
+ *       into Google's Photos Partner Program; it's not self-serve.
+ *   The Picker API works without any partner approval, but its scope
+ *   isn't on Google's allow-list for the Device Authorization Grant
+ *   (requesting it returns `invalid_scope`). So OAuth consent has to
+ *   go through a standard Authorization Code flow instead, which
+ *   needs a real HTTPS redirect URI — hence the small pairing-backend/
+ *   service this app now talks to instead of Google directly for
+ *   anything auth-related. See README.md and pairing-backend/README.md.
  * ============================================================ */
 
 /* ---------------------- CONFIG ---------------------- */
 
 const CONFIG = {
-  // From Google Cloud Console → APIs & Services → Credentials.
-  // Credential type MUST be "TVs and Limited Input devices".
-  CLIENT_ID: "YOUR_CLIENT_ID.apps.googleusercontent.com",
-  CLIENT_SECRET: "YOUR_CLIENT_SECRET",
+  // Base URL of the deployed pairing-backend/ service, no trailing
+  // slash. This is the ONLY backend config this app needs — there is
+  // no Google client ID/secret in this file at all anymore; those
+  // live server-side in the pairing backend.
+  PAIRING_BACKEND_URL: "https://YOUR-PAIRING-BACKEND.vercel.app",
 
-  // The Ambient API's scope, as documented for use with the device
-  // flow. "profile" is included because Google's own Ambient API
-  // sample requests it alongside the API scope.
-  SCOPE: "profile https://www.googleapis.com/auth/photosambient.mediaitems",
+  PAIRING_POLL_INTERVAL_MS: 3 * 1000,
+  PAIRING_POLL_TIMEOUT_MS: 10 * 60 * 1000, // matches the backend's 10-minute KV entry TTL
 
-  // Google endpoints
-  DEVICE_CODE_URL: "https://oauth2.googleapis.com/device/code",
-  TOKEN_URL: "https://oauth2.googleapis.com/token",
-  AMBIENT_DEVICES_URL: "https://photosambient.googleapis.com/v1/devices",
-  AMBIENT_MEDIA_ITEMS_URL: "https://photosambient.googleapis.com/v1/mediaItems",
+  PICKER_SESSION_URL: "https://photospicker.googleapis.com/v1/sessions",
+  PICKER_MEDIA_ITEMS_URL: "https://photospicker.googleapis.com/v1/mediaItems",
 
-  // Shown to the user in Google Photos' device settings list.
-  DEVICE_DISPLAY_NAME: "Living Room TV",
-
-  // How long to keep polling devices.get waiting for the user to
-  // finish picking media sources, before giving up and showing an
-  // error (they can retry from the pairing screen).
+  // How long to keep polling the Picker session waiting for the user
+  // to finish picking (fallback path only — normally this finishes
+  // during the pairing redirect chain before we even get here).
   MEDIA_SOURCE_POLL_TIMEOUT_MS: 30 * 60 * 1000,
 
   // Slideshow behavior
   SLIDE_INTERVAL_MS: 15 * 1000,          // 15 seconds per requirement
   MEDIA_LIST_REFRESH_MS: 50 * 60 * 1000, // re-fetch baseUrls before the 60 min expiry
-  MAX_ITEMS_TO_LOAD: 100,                // mediaItems.list caps at 100/page for the curated feed
+  MAX_ITEMS_TO_LOAD: 200,
 
   // localStorage keys
   LS_REFRESH_TOKEN: "ambient_photos_refresh_token",
@@ -77,15 +74,14 @@ const el = {
   pairing: document.getElementById("pairing-screen"),
   slideshow: document.getElementById("slideshow-screen"),
 
-  signinStep: document.getElementById("pairing-step-signin"),
-  signinUrl: document.getElementById("signin-url"),
-  signinCode: document.getElementById("signin-code"),
-  signinStatus: document.getElementById("signin-status"),
+  connectStep: document.getElementById("pairing-step-connect"),
+  connectQr: document.getElementById("connect-qr"),
+  connectUrl: document.getElementById("connect-url"),
+  connectStatus: document.getElementById("connect-status"),
 
-  mediaStep: document.getElementById("pairing-step-media"),
-  mediaUrl: document.getElementById("media-url"),
+  mediaFallback: document.getElementById("pairing-step-media-fallback"),
   mediaQr: document.getElementById("media-qr"),
-  mediaStatus: document.getElementById("media-status"),
+  mediaUrl: document.getElementById("media-url"),
 
   pairingError: document.getElementById("pairing-error"),
 
@@ -121,7 +117,8 @@ const store = {
 };
 
 /** RFC 4122 v4 UUID, without relying on crypto.randomUUID (unavailable on
- *  older Chromium builds that some webOS versions ship with). */
+ *  older Chromium builds that some webOS versions ship with). Used here
+ *  as the pairing "state" code — treat it like a short-lived credential. */
 function uuidv4() {
   const bytes = new Uint8Array(16);
   if (window.crypto && window.crypto.getRandomValues) {
@@ -140,179 +137,120 @@ let accessToken = null;
 let accessTokenExpiresAt = 0;
 
 /* ============================================================
- * STEP A — OAuth 2.0 Device Authorization Grant
+ * STEP A — Pairing (via pairing-backend/, not Google directly)
  * ============================================================ */
 
-async function requestDeviceCode() {
-  const res = await fetch(CONFIG.DEVICE_CODE_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: CONFIG.CLIENT_ID,
-      scope: CONFIG.SCOPE,
-    }),
-  });
-  if (!res.ok) throw new Error(`device/code failed: ${res.status}`);
-  return res.json();
-  // -> { device_code, user_code, verification_url, expires_in, interval }
-}
-
-/**
- * Polls the token endpoint at the interval Google gives us until the
- * user finishes signing in on their phone/PC, or the device_code expires.
- */
-function pollForDeviceToken(deviceCode, intervalSeconds) {
+/** Polls the backend until /api/callback has stashed tokens + session for this code. */
+function pollPairingBackend(pairingCode) {
   return new Promise((resolve, reject) => {
+    const deadline = Date.now() + CONFIG.PAIRING_POLL_TIMEOUT_MS;
     const poll = async () => {
-      let res, body;
+      if (Date.now() > deadline) {
+        reject(new Error("Pairing timed out before it was completed. Please try again."));
+        return;
+      }
       try {
-        res = await fetch(CONFIG.TOKEN_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: CONFIG.CLIENT_ID,
-            client_secret: CONFIG.CLIENT_SECRET,
-            device_code: deviceCode,
-            grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-          }),
-        });
-        body = await res.json();
+        const res = await fetch(`${CONFIG.PAIRING_BACKEND_URL}/api/poll?state=${pairingCode}`);
+        if (res.status === 200) {
+          resolve(await res.json());
+          return;
+        }
+        // 202 (pending) or a transient error — keep polling either way.
       } catch (networkErr) {
-        setTimeout(poll, intervalSeconds * 1000);
-        return;
+        // keep polling through transient network errors
       }
-
-      if (res.ok) {
-        resolve(body); // { access_token, refresh_token, expires_in, ... }
-        return;
-      }
-
-      switch (body.error) {
-        case "authorization_pending":
-          setTimeout(poll, intervalSeconds * 1000);
-          break;
-        case "slow_down":
-          intervalSeconds += 5;
-          setTimeout(poll, intervalSeconds * 1000);
-          break;
-        case "expired_token":
-          reject(new Error("Device code expired before sign-in completed."));
-          break;
-        case "access_denied":
-          reject(new Error("Sign-in was denied."));
-          break;
-        default:
-          reject(new Error(`Token polling error: ${body.error || res.status}${body.error_description ? " — " + body.error_description : ""}`));
-      }
+      setTimeout(poll, CONFIG.PAIRING_POLL_INTERVAL_MS);
     };
     poll();
   });
 }
 
-/** Runs the full device flow UI + network sequence and stores the refresh token. */
-async function runDeviceSignIn() {
-  // Reveal the pairing screen itself here, not just this step within it —
-  // boot() doesn't call showScreen("pairing") until ensureAccessToken()
-  // resolves, which doesn't happen until sign-in is fully complete. Without
-  // this line the code/URL below get written into the DOM correctly, but
-  // stay hidden behind the boot spinner the whole time.
+/** Runs the full pairing UI + polling sequence and stores the resulting credentials. */
+async function runPairing() {
   showScreen("pairing");
-  el.signinStep.classList.remove("hidden");
-  el.signinStatus.textContent = "Requesting a sign-in code…";
+  el.mediaFallback.classList.add("hidden");
+  el.connectStep.classList.remove("hidden");
+  el.connectStatus.textContent = "Preparing…";
 
-  const { device_code, user_code, verification_url, interval } = await requestDeviceCode();
+  const pairingCode = uuidv4();
+  const startUrl = `${CONFIG.PAIRING_BACKEND_URL}/api/start?state=${pairingCode}`;
 
-  el.signinUrl.textContent = verification_url.replace(/^https?:\/\//, "");
-  el.signinCode.textContent = user_code;
-  el.signinStatus.textContent = "Waiting for sign-in…";
+  el.connectUrl.textContent = startUrl.replace(/^https?:\/\//, "");
+  el.connectQr.innerHTML = "";
+  // eslint-disable-next-line no-undef
+  new QRCode(el.connectQr, { text: startUrl, width: 220, height: 220 });
+  el.connectStatus.textContent = "Waiting for sign-in…";
 
-  const tokenResponse = await pollForDeviceToken(device_code, interval || 5);
+  const result = await pollPairingBackend(pairingCode);
+  // result: { refreshToken, accessToken, accessTokenExpiresAt, sessionId }
 
-  accessToken = tokenResponse.access_token;
-  accessTokenExpiresAt = Date.now() + tokenResponse.expires_in * 1000;
-  if (tokenResponse.refresh_token) {
-    store.set(CONFIG.LS_REFRESH_TOKEN, tokenResponse.refresh_token);
-  }
+  accessToken = result.accessToken;
+  accessTokenExpiresAt = result.accessTokenExpiresAt;
+  store.set(CONFIG.LS_REFRESH_TOKEN, result.refreshToken);
+  store.set(CONFIG.LS_PICKER_SESSION_ID, result.sessionId);
 
-  el.signinStatus.textContent = "Signed in.";
-  el.signinStep.classList.add("hidden");
+  el.connectStep.classList.add("hidden");
+  return result.sessionId;
 }
 
-/** Exchanges a stored refresh token for a fresh access token. */
+/** Exchanges a stored refresh token for a fresh access token via the backend. */
 async function refreshAccessToken() {
   const refreshToken = store.get(CONFIG.LS_REFRESH_TOKEN);
   if (!refreshToken) throw new Error("No refresh token stored.");
 
-  const res = await fetch(CONFIG.TOKEN_URL, {
+  const res = await fetch(`${CONFIG.PAIRING_BACKEND_URL}/api/refresh`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: CONFIG.CLIENT_ID,
-      client_secret: CONFIG.CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refreshToken }),
   });
 
   if (!res.ok) {
-    // Refresh token itself is invalid/revoked — force a fresh sign-in.
+    // Refresh token itself is invalid/revoked — force a fresh pairing.
     store.remove(CONFIG.LS_REFRESH_TOKEN);
-    throw new Error(`refresh_token exchange failed: ${res.status}`);
+    store.remove(CONFIG.LS_PICKER_SESSION_ID);
+    throw new Error(`Token refresh failed: ${res.status}`);
   }
 
   const body = await res.json();
-  accessToken = body.access_token;
-  accessTokenExpiresAt = Date.now() + body.expires_in * 1000;
+  accessToken = body.accessToken;
+  accessTokenExpiresAt = Date.now() + body.expiresIn * 1000;
 }
 
-/** Returns a valid access token, refreshing or running sign-in as needed. */
+/** Returns a valid access token via the stored refresh token, or null if we need to pair. */
 async function ensureAccessToken() {
   if (accessToken && Date.now() < accessTokenExpiresAt - 60_000) {
     return accessToken;
   }
-  if (store.get(CONFIG.LS_REFRESH_TOKEN)) {
+  if (!store.get(CONFIG.LS_REFRESH_TOKEN)) {
+    return null;
+  }
+  try {
     await refreshAccessToken();
     return accessToken;
+  } catch (e) {
+    return null;
   }
-  await runDeviceSignIn();
-  return accessToken;
 }
 
 /* ============================================================
  * STEP B — Google Photos Ambient API
  * ============================================================ */
 
-async function createAmbientDevice(token, requestId) {
-  const url = new URL(CONFIG.AMBIENT_DEVICES_URL);
-  url.searchParams.set("requestId", requestId);
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ displayName: CONFIG.DEVICE_DISPLAY_NAME }),
-  });
-  if (!res.ok) throw new Error(`devices.create failed: ${res.status}`);
-  return res.json(); // AmbientDevice: { id, displayName, settingsUri, mediaSourcesSet, pollingConfig, ... }
-}
-
-async function getAmbientDevice(token, deviceId) {
-  const res = await fetch(`${CONFIG.AMBIENT_DEVICES_URL}/${deviceId}`, {
+async function getPickerSession(token, sessionId) {
+  const res = await fetch(`${CONFIG.PICKER_SESSION_URL}/${sessionId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`devices.get failed: ${res.status}`);
   return res.json();
 }
 
-/** Polls a device until the user finishes picking media sources on their phone. */
-function pollUntilMediaSourcesSet(token, deviceId, pollIntervalSeconds, timeoutMs) {
+/** Polls a picker session until the user finishes selecting media on their phone. */
+function pollPickerSession(token, sessionId, pollIntervalSeconds, timeoutMs) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutMs;
     const poll = async () => {
       if (Date.now() > deadline) {
-        reject(new Error("Timed out waiting for media sources to be selected."));
+        reject(new Error("Timed out waiting for a photo selection."));
         return;
       }
       let device;
@@ -333,43 +271,31 @@ function pollUntilMediaSourcesSet(token, deviceId, pollIntervalSeconds, timeoutM
 }
 
 /**
- * Runs the full "choose media sources" UI + network sequence: creates (or
- * reuses) an Ambient device, shows its settings QR/URL, waits for the user
- * to finish picking sources. Persists the device id and the requestId used
- * to create it, so a restart doesn't create a duplicate device.
+ * Makes sure the given Picker session has media sources selected.
+ * Normally the phone was already auto-redirected into the picker by
+ * the backend during pairing, so this resolves almost immediately.
+ * If not (e.g. re-showing after a restart with an unfinished session),
+ * shows a fallback QR/link to the session's own pickerUri.
  */
-async function runMediaSourceSetup(token) {
-  el.mediaStep.classList.remove("hidden");
-  el.mediaStatus.textContent = "Setting up this device in Google Photos…";
+async function ensureSessionReady(token, sessionId) {
+  showScreen("pairing");
+  el.connectStep.classList.add("hidden");
 
-  let requestId = store.get(CONFIG.LS_DEVICE_REQUEST_ID);
-  if (!requestId) {
-    requestId = uuidv4();
-    store.set(CONFIG.LS_DEVICE_REQUEST_ID, requestId);
-  }
+  let session = await getPickerSession(token, sessionId);
+  if (session.mediaItemsSet) return;
 
-  const device = await createAmbientDevice(token, requestId);
-  store.set(CONFIG.LS_DEVICE_ID, device.id);
-
-  el.mediaUrl.textContent = device.settingsUri;
+  el.mediaFallback.classList.remove("hidden");
+  el.mediaUrl.textContent = session.pickerUri.replace(/^https?:\/\//, "");
   el.mediaQr.innerHTML = "";
   // eslint-disable-next-line no-undef
-  new QRCode(el.mediaQr, {
-    text: device.settingsUri,
-    width: 220,
-    height: 220,
-  });
+  new QRCode(el.mediaQr, { text: session.pickerUri, width: 200, height: 200 });
 
-  el.mediaStatus.textContent = "Waiting for photo selection…";
+  const pollInterval = session.pollingConfig?.pollInterval
+    ? parseFloat(session.pollingConfig.pollInterval)
+    : 3;
 
-  const pollInterval = device.pollingConfig?.pollInterval
-    ? parseFloat(device.pollingConfig.pollInterval)
-    : 5;
-
-  await pollUntilMediaSourcesSet(token, device.id, pollInterval, CONFIG.MEDIA_SOURCE_POLL_TIMEOUT_MS);
-
-  el.mediaStep.classList.add("hidden");
-  return device.id;
+  await pollPickerSession(token, sessionId, pollInterval, CONFIG.MEDIA_SOURCE_POLL_TIMEOUT_MS);
+  el.mediaFallback.classList.add("hidden");
 }
 
 /** Fetches curated ambient media items for a device (paginated). */
@@ -461,7 +387,8 @@ function scheduleMediaListRefresh(deviceId) {
   setInterval(async () => {
     try {
       const token = await ensureAccessToken();
-      const fresh = await listAmbientMediaItems(token, deviceId);
+      if (!token) return; // next tick retries; boot() only re-pairs on startup
+      const fresh = await listPickedMediaItems(token, sessionId);
       if (fresh.length) mediaItems = fresh;
     } catch (err) {
       // Keep showing the current (possibly stale) list; next tick retries.
@@ -477,24 +404,24 @@ function scheduleMediaListRefresh(deviceId) {
 async function boot() {
   showScreen("boot");
   try {
-    const token = await ensureAccessToken();
-    showScreen("pairing"); // stays hidden unless runMediaSourceSetup needs it
+    let token = await ensureAccessToken();
+    let sessionId = store.get(CONFIG.LS_PICKER_SESSION_ID);
 
-    let deviceId = store.get(CONFIG.LS_DEVICE_ID);
-    let needsSetup = true;
-
-    if (deviceId) {
-      try {
-        const device = await getAmbientDevice(token, deviceId);
-        needsSetup = !device.mediaSourcesSet;
-      } catch (e) {
-        // Device was deleted, or belongs to a client ID we no longer use — redo setup.
-        needsSetup = true;
-      }
+    if (!token || !sessionId) {
+      sessionId = await runPairing();
+      token = accessToken;
     }
 
-    if (needsSetup) {
-      deviceId = await runMediaSourceSetup(token);
+    try {
+      await ensureSessionReady(token, sessionId);
+    } catch (e) {
+      // Session was deleted/expired server-side, or belongs to a stale
+      // pairing — clear it and pair again from scratch.
+      store.remove(CONFIG.LS_REFRESH_TOKEN);
+      store.remove(CONFIG.LS_PICKER_SESSION_ID);
+      sessionId = await runPairing();
+      token = accessToken;
+      await ensureSessionReady(token, sessionId);
     }
 
     mediaItems = await listAmbientMediaItems(token, deviceId);
