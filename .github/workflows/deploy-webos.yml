@@ -78,16 +78,16 @@ jobs:
           node -e '
             const fs = require("fs");
             const placeholder = "https://YOUR-PAIRING-BACKEND.vercel.app";
-            let js = fs.readFileSync("app.js", "utf8");
+            let js = fs.readFileSync("src/app.js", "utf8");
             if (!js.includes(placeholder)) {
               console.error("Placeholder not found in app.js — did CONFIG.PAIRING_BACKEND_URL change?");
               process.exit(1);
             }
             js = js.split(placeholder).join(process.env.PAIRING_BACKEND_URL);
-            fs.writeFileSync("app.js", js);
+            fs.writeFileSync("src/app.js", js);
           '
-          jq --arg id "$WEBOS_APP_ID" '.id = $id' appinfo.json > appinfo.json.tmp
-          mv appinfo.json.tmp appinfo.json
+          jq --arg id "$WEBOS_APP_ID" '.id = $id' src/appinfo.json > src/appinfo.json.tmp
+          mv src/appinfo.json.tmp src/appinfo.json
 
       - name: Package ipk
         run: >
