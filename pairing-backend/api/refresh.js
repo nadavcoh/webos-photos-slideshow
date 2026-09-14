@@ -7,6 +7,19 @@
  * packaged TV app.
  */
 module.exports = async (req, res) => {
+  // Same CORS reasoning as poll.js. This endpoint is POSTed to with a
+  // JSON body, which triggers a CORS *preflight* (an OPTIONS request)
+  // first — that needs its own response with the Allow-Methods/Headers
+  // set, separate from the real POST handling below.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "method_not_allowed" });
     return;

@@ -10,6 +10,14 @@ const { kv } = require("@vercel/kv");
  * window and only once.
  */
 module.exports = async (req, res) => {
+  // The TV app's origin (file://, http://localhost during testing, or
+  // whatever webOS assigns the packaged app) is always cross-origin
+  // relative to this backend, so this needs an explicit CORS header —
+  // Vercel functions don't send one by default. No credentials/cookies
+  // are involved here (auth is the shared secret + HMAC-signed state,
+  // not same-origin), so a wildcard is fine.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
   const { state } = req.query;
 
   if (!state || typeof state !== "string") {

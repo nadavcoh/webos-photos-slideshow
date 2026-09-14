@@ -19,6 +19,14 @@ pairing codes. Four serverless functions, no framework, no build step.
 - `POST /api/refresh` — the TV calls this to refresh its access token
   without ever holding the client secret itself.
 
+`/api/poll` and `/api/refresh` send `Access-Control-Allow-Origin: *`
+(and, for `/api/refresh`, handle the CORS preflight `OPTIONS` request) —
+the TV app's origin is always cross-origin relative to this backend, and
+Vercel functions don't add CORS headers by default. `/api/start` and
+`/api/callback` don't need this: they're reached via a real browser
+navigation (following a link/QR), not a script-initiated `fetch()`, and
+CORS only governs the latter.
+
 ## Deploy
 
 1. **Google Cloud Console → Credentials → Create Credentials → OAuth
