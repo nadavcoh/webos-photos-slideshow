@@ -358,12 +358,39 @@ function formatDate(item) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
-function preload(url) {
+/**
+ * Google Photos base URLs (Library API and Picker API alike) are not
+ * plain public image URLs — Google requires the request to carry the
+ * same OAuth access token as an `Authorization: Bearer` header, or it
+ * 403s. A bare <img src="..."> can't attach that header, so we fetch
+ * the bytes ourselves and hand the <img> a local blob: URL instead.
+ */
+function preload(item) {
   return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(url);
-    img.onerror = reject;
-    img.src = url;
+    (async () => {
+      try {
+        const token = await ensureAccessToken();
+        if (!token) throw new Error("No access token available for image fetch.");
+
+        const res = await fetch(fullResUrl(item), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`Image fetch failed: ${res.status}`);
+
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+
+        const img = new Image();
+        img.onload = () => resolve(objectUrl);
+        img.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error("Image failed to decode."));
+        };
+        img.src = objectUrl;
+      } catch (e) {
+        reject(e);
+      }
+    })();
   });
 }
 
@@ -375,14 +402,20 @@ async function showNextSlide() {
 
   let url;
   try {
-    url = await preload(fullResUrl(item));
+    url = await preload(item);
   } catch (e) {
     // Skip a broken/expired item and try the next one immediately.
     showNextSlide();
     return;
   }
 
+  // hiddenLayer is about to be overwritten and has been off-screen since
+  // the previous-previous cycle, so its old blob: URL is safe to free.
+  if (hiddenLayer.dataset.objectUrl) {
+    URL.revokeObjectURL(hiddenLayer.dataset.objectUrl);
+  }
   hiddenLayer.src = url;
+  hiddenLayer.dataset.objectUrl = url;
   el.overlayDate.textContent = formatDate(item);
 
   // Crossfade: fade the new layer in, fade the old one out, then swap roles.

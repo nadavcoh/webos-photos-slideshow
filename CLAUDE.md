@@ -112,6 +112,18 @@ local-testing path and a CI path — don't invent a second mechanism.
   specifically (a distinct entry from "Devices"/"OAuth clients" in the
   scope picker), and the ACL's `tagOwners` must already contain the tag
   before you scope a client to it.
+- **Grayscale "no entry" icon on slideshow start, `403` on
+  `lh3.googleusercontent.com` in the console**: `preload()` was setting
+  `img.src` directly to the Picker API `baseUrl` (with the size suffix).
+  Google's media `baseUrl`s (Library API and Picker API both) require
+  the OAuth access token as an `Authorization: Bearer` header on the
+  download request itself — a plain `<img src>` can't send that header,
+  so the browser's unauthenticated GET 403s. Fixed by fetching the
+  bytes with `fetch()` + the Bearer header, then pointing the `<img>` at
+  a `URL.createObjectURL(blob)` instead of the raw Google URL (with the
+  old blob URL revoked each cycle to avoid leaking memory on a
+  long-running TV app). Don't "simplify" `preload()` back to a bare
+  `img.src = url` — that's this bug again.
 - **`src/app.js` got corrupted once** via what looked like a partial
   manual merge between the Ambient-API version and the Picker+pairing-
   backend version (referenced undefined things like `getAmbientDevice`
