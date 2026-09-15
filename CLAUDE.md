@@ -121,6 +121,35 @@ While the slideshow is playing:
   that specific remote actually sends and add it to `isBackKey()` —
   don't just swap which key is checked.
 
+## Screensaver suppression
+
+`suppressScreenSaver()` (called once, alongside `boot()`) uses an
+**undocumented** Luna handshake — there's no official webOS API for "an
+app requests the screensaver stay off," so this relies on a technique
+several other webOS developers have independently found and relied on:
+subscribe to `registerScreenSaverRequest`, and every time it calls back
+with `state: "Active"`, reply via `responseScreenSaverRequest` with
+`ack: false` to defer it. It keeps re-asking, so this keeps saying no
+indefinitely for as long as the app is running. Registered once at
+startup (not tied to `startSlideshow()`), so it also covers the pairing
+screens — a QR code shouldn't vanish under the screensaver mid-scan
+either.
+
+**Known footgun, from other devs' reports, not yet hit here but worth
+knowing before touching this code**: the `tvpower` service hands off a
+screensaver request and waits for a reply; if the *client* app closes
+while a request is mid-flight (rather than replying), the service can
+get stuck treating itself as busy and refuse every later screensaver
+request until the TV is power-cycled. Practically: don't add logic that
+closes/reloads the app while a `state: "Active"` callback might be
+outstanding, and if the screensaver ever seems to stop responding to
+this app's `ack: false` after an app crash/force-close during dev
+iteration, a TV power cycle is the known fix, not a code bug to chase.
+
+Since `WebOSServiceBridge` only exists in the real webOS runtime, this
+silently no-ops when testing via `npx serve .` in a desktop browser —
+that's expected, not a bug to chase there either.
+
 ## Local config pattern
 
 `src/app.js` reads `window.APP_CONFIG` if present, else falls back to

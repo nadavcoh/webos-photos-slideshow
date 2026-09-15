@@ -644,6 +644,59 @@ el.menuLogout.addEventListener("click", () => {
 });
 
 /* ============================================================
+ * Screensaver suppression (webOS TV)
+ * ============================================================ */
+
+/**
+ * webOS's own screensaver kicks in after a few minutes of remote
+ * inactivity regardless of what a plain web app is displaying — there's
+ * no signal a foreground web app can send that just means "I'm actively
+ * showing content, leave the screen alone." The platform instead polls
+ * every foreground app with "can I start the screensaver now?" and
+ * starts it unless something replies "not now." This uses that
+ * undocumented (but widely relied-on) Luna handshake:
+ *   1. Subscribe to registerScreenSaverRequest.
+ *   2. Each time it calls back with state: "Active" (i.e. "about to
+ *      start"), reply via responseScreenSaverRequest with ack: false,
+ *      which defers it — and it'll ask again next cycle, so this just
+ *      keeps saying no indefinitely for as long as the app is running.
+ * Only exists inside the real webOS runtime (`WebOSServiceBridge`) —
+ * this no-ops harmlessly when testing in a desktop browser via
+ * `npx serve .`, so it's safe to always call.
+ */
+function suppressScreenSaver() {
+  if (typeof WebOSServiceBridge === "undefined") return; // not running on a real webOS TV
+
+  try {
+    const bridge = new WebOSServiceBridge();
+    bridge.onservicecallback = (msg) => {
+      let message;
+      try {
+        message = JSON.parse(msg);
+      } catch (e) {
+        return;
+      }
+      if (message.state === "Active") {
+        bridge.call(
+          "luna://com.webos.service.tvpower/power/responseScreenSaverRequest",
+          JSON.stringify({
+            clientName: "ambientPhotos",
+            ack: false, // false = "not now" — keep deferring
+            timestamp: message.timestamp,
+          })
+        );
+      }
+    };
+    bridge.call(
+      "luna://com.webos.service.tvpower/power/registerScreenSaverRequest",
+      JSON.stringify({ subscribe: true, clientName: "ambientPhotos" })
+    );
+  } catch (e) {
+    console.error("Screensaver suppression failed to register:", e);
+  }
+}
+
+/* ============================================================
  * BOOT SEQUENCE
  * ============================================================ */
 
@@ -684,4 +737,5 @@ async function boot() {
   }
 }
 
+suppressScreenSaver(); // register once, covers pairing screens too — not just the slideshow
 boot();
