@@ -103,6 +103,10 @@ const el = {
   layerA: document.getElementById("layer-a"),
   layerB: document.getElementById("layer-b"),
   overlayDate: document.getElementById("overlay-date"),
+
+  menuOverlay: document.getElementById("menu-overlay"),
+  menuRepick: document.getElementById("menu-repick"),
+  menuLogout: document.getElementById("menu-logout"),
 };
 
 function showScreen(name) {
@@ -115,6 +119,11 @@ function showScreen(name) {
 function showError(message) {
   el.pairingError.textContent = message;
   el.pairingError.classList.remove("hidden");
+}
+
+function hideError() {
+  el.pairingError.classList.add("hidden");
+  el.pairingError.textContent = "";
 }
 
 /* ---------------------- STORAGE ---------------------- */
@@ -432,8 +441,10 @@ function startSlideshow() {
 }
 
 /** Re-fetches the media list (fresh baseUrls) without interrupting playback. */
+let mediaListRefreshTimer = null;
 function scheduleMediaListRefresh(sessionId) {
-  setInterval(async () => {
+  clearInterval(mediaListRefreshTimer); // repick/relogin can call this again — don't stack timers
+  mediaListRefreshTimer = setInterval(async () => {
     try {
       const token = await ensureAccessToken();
       if (!token) return; // next tick retries; boot() only re-pairs on startup
@@ -445,6 +456,140 @@ function scheduleMediaListRefresh(sessionId) {
     }
   }, CONFIG.MEDIA_LIST_REFRESH_MS);
 }
+
+/* ============================================================
+ * STEP D — Remote-control menu (repick / log out)
+ * ============================================================ */
+
+/** Creates a brand-new Picker session for the already-authorized
+ *  account — no Google sign-in required, unlike full pairing. Called
+ *  directly against Google (same as getPickerSession/listPickedMediaItems
+ *  already do); this JSON endpoint accepts cross-origin Bearer-token
+ *  requests same as those do. */
+async function createPickerSession(token) {
+  const res = await fetch(CONFIG.PICKER_SESSION_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  });
+  if (!res.ok) throw new Error(`Picker session creation failed: ${res.status}`);
+  return res.json();
+}
+
+/** "Repick Photos": keeps the current Google sign-in, just opens a new
+ *  Picker session so a different album/selection can be chosen. Shows
+ *  only the photo-picker QR (pairing-step-media-fallback), not the
+ *  full sign-in QR. */
+async function repickPhotos() {
+  clearInterval(slideTimer);
+  clearInterval(mediaListRefreshTimer);
+  hideError();
+
+  try {
+    const token = await ensureAccessToken();
+    if (!token) {
+      // Refresh token itself is gone/invalid — nothing to repick with.
+      await logOut();
+      return;
+    }
+
+    const session = await createPickerSession(token);
+    store.set(CONFIG.LS_PICKER_SESSION_ID, session.id);
+
+    showScreen("pairing");
+    el.connectStep.classList.add("hidden"); // skip the sign-in QR — already signed in
+    await ensureSessionReady(token, session.id);
+
+    mediaItems = await listPickedMediaItems(token, session.id);
+    if (mediaItems.length === 0) {
+      throw new Error("No photos were selected.");
+    }
+
+    scheduleMediaListRefresh(session.id);
+    startSlideshow();
+  } catch (err) {
+    console.error(err);
+    showScreen("pairing");
+    el.connectStep.classList.add("hidden");
+    showError(err.message || "Repicking photos failed.");
+  }
+}
+
+/** "Log Out": clears everything (refresh token + Picker session) and
+ *  drops back to the full sign-in QR, same as a fresh first run. */
+async function logOut() {
+  clearInterval(slideTimer);
+  clearInterval(mediaListRefreshTimer);
+
+  store.remove(CONFIG.LS_REFRESH_TOKEN);
+  store.remove(CONFIG.LS_PICKER_SESSION_ID);
+  accessToken = null;
+  accessTokenExpiresAt = 0;
+  mediaItems = [];
+
+  el.connectStep.classList.remove("hidden");
+  hideError();
+  boot();
+}
+
+/* ---- Remote-control wiring: any button reveals the menu, D-pad moves
+ *      focus between the two buttons, OK activates natively, Back/Escape
+ *      dismisses, and it auto-hides after a few seconds either way. ---- */
+
+let menuHideTimer = null;
+const MENU_AUTO_HIDE_MS = 8000;
+
+function menuIsOpen() {
+  return !el.menuOverlay.classList.contains("hidden");
+}
+
+function showMenu() {
+  clearTimeout(menuHideTimer);
+  el.menuOverlay.classList.remove("hidden");
+  el.menuRepick.focus();
+  menuHideTimer = setTimeout(hideMenu, MENU_AUTO_HIDE_MS);
+}
+
+function hideMenu() {
+  clearTimeout(menuHideTimer);
+  el.menuOverlay.classList.add("hidden");
+}
+
+document.addEventListener("keydown", (e) => {
+  if (el.slideshow.classList.contains("hidden")) return; // only during playback
+
+  if (!menuIsOpen()) {
+    showMenu();
+    e.preventDefault();
+    return;
+  }
+
+  clearTimeout(menuHideTimer);
+  menuHideTimer = setTimeout(hideMenu, MENU_AUTO_HIDE_MS);
+
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+    const next = document.activeElement === el.menuRepick ? el.menuLogout : el.menuRepick;
+    next.focus();
+    e.preventDefault();
+  } else if (e.key === "Backspace" || e.key === "Escape") {
+    hideMenu();
+    e.preventDefault();
+  }
+  // Enter/OK activates whichever button is focused via native <button> behavior.
+});
+
+el.menuRepick.addEventListener("click", () => {
+  hideMenu();
+  repickPhotos();
+});
+
+el.menuLogout.addEventListener("click", () => {
+  hideMenu();
+  logOut();
+});
 
 /* ============================================================
  * BOOT SEQUENCE

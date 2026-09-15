@@ -56,6 +56,18 @@
     <div id="overlay" class="overlay">
       <span id="overlay-date"></span>
     </div>
+
+    <!-- Hidden until any remote button is pressed during playback.
+         Left/Right (or Up/Down) moves focus, OK activates the focused
+         button natively, Back/Escape dismisses, and it auto-hides after
+         a few seconds of inactivity either way. -->
+    <div id="menu-overlay" class="menu-overlay hidden">
+      <div class="menu-card">
+        <button id="menu-repick" class="menu-btn" type="button">Repick Photos</button>
+        <button id="menu-logout" class="menu-btn" type="button">Log Out</button>
+      </div>
+      <p class="menu-hint">&larr; &rarr; to choose &nbsp;&middot;&nbsp; OK to select &nbsp;&middot;&nbsp; Back to dismiss</p>
+    </div>
   </div>
 
   <div id="boot-screen" class="screen">

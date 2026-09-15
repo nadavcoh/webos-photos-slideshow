@@ -83,6 +83,33 @@ pairing-backend/        ← separate Vercel deployment, NOT packaged into the TV
   already the right protection for those; adding a shared secret there
   wouldn't add real security, just friction.
 
+## Remote-control menu (repick / log out)
+
+Any remote button during playback brings up an on-screen menu with two
+options (D-pad left/right to move focus, OK to activate — real
+`<button>` elements, so Enter-triggers-click is free from the browser;
+auto-hides after 8s):
+
+- **Repick Photos** — calls `POST /v1/sessions` on
+  `photospicker.googleapis.com` *directly from the TV* using the
+  already-valid access token, no pairing-backend involved. This is safe
+  because session creation only needs a Bearer token, not the client
+  secret — same reason `getPickerSession`/`listPickedMediaItems` already
+  call Google directly rather than proxying through the backend. Only
+  the fallback QR (`pairing-step-media-fallback`) is shown, not the
+  full sign-in QR — the user stays signed in, they're just picking a
+  new album/selection.
+- **Log Out** — clears both `localStorage` keys (refresh token +
+  Picker session id) and the in-memory access token, then calls
+  `boot()` again, which falls through to the full `runPairing()` QR
+  (fresh Google sign-in, `prompt=consent` issues a new refresh token).
+
+Both paths `clearInterval` the slideshow timer *and* the media-list
+refresh timer first (`scheduleMediaListRefresh` now tracks its interval
+in module-level `mediaListRefreshTimer` and clears any existing one on
+entry, so repicking twice — or repicking after a normal boot — never
+stacks duplicate refresh intervals).
+
 ## Local config pattern
 
 `src/app.js` reads `window.APP_CONFIG` if present, else falls back to

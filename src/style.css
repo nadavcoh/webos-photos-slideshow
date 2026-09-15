@@ -177,3 +177,47 @@ html, body {
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
   pointer-events: none;
 }
+
+/* ---------------- Remote-control menu ---------------- */
+
+.menu-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.8rem;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.menu-card {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.menu-btn {
+  font-family: inherit;
+  font-size: 1.3rem;
+  font-weight: 300;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  padding: 1.1rem 2.2rem;
+  cursor: pointer;
+}
+
+.menu-btn:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.menu-hint {
+  font-size: 0.95rem;
+  font-weight: 300;
+  color: var(--fg-dim);
+}
