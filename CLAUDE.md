@@ -83,32 +83,43 @@ pairing-backend/        ← separate Vercel deployment, NOT packaged into the TV
   already the right protection for those; adding a shared secret there
   wouldn't add real security, just friction.
 
-## Remote-control menu (repick / log out)
+## Remote-control menu (repick / log out) + manual photo nav
 
-Any remote button during playback brings up an on-screen menu with two
-options (D-pad left/right to move focus, OK to activate — real
-`<button>` elements, so Enter-triggers-click is free from the browser;
-auto-hides after 8s):
+While the slideshow is playing:
 
-- **Repick Photos** — calls `POST /v1/sessions` on
-  `photospicker.googleapis.com` *directly from the TV* using the
-  already-valid access token, no pairing-backend involved. This is safe
-  because session creation only needs a Bearer token, not the client
-  secret — same reason `getPickerSession`/`listPickedMediaItems` already
-  call Google directly rather than proxying through the backend. Only
-  the fallback QR (`pairing-step-media-fallback`) is shown, not the
-  full sign-in QR — the user stays signed in, they're just picking a
-  new album/selection.
-- **Log Out** — clears both `localStorage` keys (refresh token +
-  Picker session id) and the in-memory access token, then calls
-  `boot()` again, which falls through to the full `runPairing()` QR
-  (fresh Google sign-in, `prompt=consent` issues a new refresh token).
-
-Both paths `clearInterval` the slideshow timer *and* the media-list
-refresh timer first (`scheduleMediaListRefresh` now tracks its interval
-in module-level `mediaListRefreshTimer` and clears any existing one on
-entry, so repicking twice — or repicking after a normal boot — never
-stacks duplicate refresh intervals).
+- **Left/Right arrows** step to the previous/next photo immediately and
+  reset the 15s auto-advance clock (`goToPrevSlide`/`goToNextSlide` →
+  `restartSlideTimer`), so manual browsing doesn't fight the timer.
+  `mediaItems` navigation is tracked via a single `displayedIndex`
+  (bidirectional, wraps both ways) rather than the old one-directional
+  `currentIndex`.
+- **Any other button** opens a small on-screen menu (D-pad left/right/
+  up/down moves focus between two real `<button>`s, OK activates via
+  native browser behavior, auto-hides after 8s):
+  - **Repick Photos** — calls `POST /v1/sessions` on
+    `photospicker.googleapis.com` *directly from the TV* using the
+    already-valid access token, no pairing-backend involved. Safe
+    because session creation only needs a Bearer token, not the client
+    secret — same reason `getPickerSession`/`listPickedMediaItems`
+    already call Google directly. Only the fallback QR
+    (`pairing-step-media-fallback`) is shown, not the full sign-in QR —
+    user stays signed in, they're just picking a new selection.
+  - **Log Out** — clears both `localStorage` keys (refresh token +
+    Picker session id) and the in-memory access token, then calls
+    `boot()` again → falls through to the full `runPairing()` QR.
+  Both paths `clearInterval` the slideshow timer *and* the media-list
+  refresh timer first (`scheduleMediaListRefresh` tracks its interval
+  in module-level `mediaListRefreshTimer`, clearing any existing one on
+  entry — repicking twice, or repicking after a normal boot, never
+  stacks duplicate refresh intervals).
+- **Back button**: webOS's remote Back key is inconsistent across
+  firmware/remotes about what it reports — `isBackKey()` checks
+  `e.keyCode === 461` (the actual LG-documented code) *and*
+  `e.key === "GoBack"`/`"Backspace"`/`"Escape"`, since real devices have
+  been seen sending any of these. If Back still doesn't do anything on
+  a given TV, use `ares-inspect` (remote Chrome DevTools) to check what
+  that specific remote actually sends and add it to `isBackKey()` —
+  don't just swap which key is checked.
 
 ## Local config pattern
 

@@ -123,8 +123,8 @@ html, body {
 .pairing-qr canvas,
 .pairing-qr img {
   background: #fff;
-  padding: 12px;
-  border-radius: 8px;
+  padding: 24px;
+  border-radius: 12px;
 }
 
 .pairing-error {

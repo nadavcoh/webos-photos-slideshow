@@ -202,7 +202,7 @@ async function runPairing() {
   el.connectUrl.textContent = startUrl.replace(/^https?:\/\//, "").split("&key=")[0];
   el.connectQr.innerHTML = "";
   // eslint-disable-next-line no-undef
-  new QRCode(el.connectQr, { text: startUrl, width: 220, height: 220 });
+  new QRCode(el.connectQr, { text: startUrl, width: 480, height: 480 });
   el.connectStatus.textContent = "Waiting for sign-in…";
 
   const result = await pollPairingBackend(pairingCode);
@@ -312,7 +312,7 @@ async function ensureSessionReady(token, sessionId) {
   el.mediaUrl.textContent = session.pickerUri.replace(/^https?:\/\//, "");
   el.mediaQr.innerHTML = "";
   // eslint-disable-next-line no-undef
-  new QRCode(el.mediaQr, { text: session.pickerUri, width: 200, height: 200 });
+  new QRCode(el.mediaQr, { text: session.pickerUri, width: 480, height: 480 });
 
   const pollInterval = session.pollingConfig?.pollInterval
     ? parseFloat(session.pollingConfig.pollInterval)
@@ -350,7 +350,7 @@ async function listPickedMediaItems(token, sessionId) {
  * ============================================================ */
 
 let mediaItems = [];
-let currentIndex = 0;
+let displayedIndex = -1; // index of the currently-visible item; -1 = nothing shown yet
 let visibleLayer = el.layerA;
 let hiddenLayer = el.layerB;
 let slideTimer = null;
@@ -403,19 +403,15 @@ function preload(item) {
   });
 }
 
-async function showNextSlide() {
-  if (mediaItems.length === 0) return;
-
-  const item = mediaItems[currentIndex];
-  currentIndex = (currentIndex + 1) % mediaItems.length;
-
+/** Loads and crossfades in a specific item. Returns false (without
+ *  throwing) if the item's image failed to load/decode, so callers can
+ *  skip to the next one in whichever direction they're going. */
+async function renderItem(item) {
   let url;
   try {
     url = await preload(item);
   } catch (e) {
-    // Skip a broken/expired item and try the next one immediately.
-    showNextSlide();
-    return;
+    return false;
   }
 
   // hiddenLayer is about to be overwritten and has been off-screen since
@@ -431,13 +427,44 @@ async function showNextSlide() {
   hiddenLayer.classList.add("visible");
   visibleLayer.classList.remove("visible");
   [visibleLayer, hiddenLayer] = [hiddenLayer, visibleLayer];
+  return true;
+}
+
+async function showNextSlide() {
+  if (mediaItems.length === 0) return;
+  displayedIndex = (displayedIndex + 1) % mediaItems.length;
+  const ok = await renderItem(mediaItems[displayedIndex]);
+  if (!ok) showNextSlide(); // skip a broken/expired item, try the next one immediately
+}
+
+async function showPrevSlide() {
+  if (mediaItems.length === 0) return;
+  displayedIndex = (displayedIndex - 1 + mediaItems.length) % mediaItems.length;
+  const ok = await renderItem(mediaItems[displayedIndex]);
+  if (!ok) showPrevSlide(); // skip a broken/expired item, try the previous one immediately
+}
+
+function restartSlideTimer() {
+  clearInterval(slideTimer);
+  slideTimer = setInterval(showNextSlide, CONFIG.SLIDE_INTERVAL_MS);
+}
+
+/** Manual navigation from the remote — jumps immediately and resets the
+ *  auto-advance clock so it doesn't fire right on top of the manual one. */
+function goToNextSlide() {
+  showNextSlide();
+  restartSlideTimer();
+}
+
+function goToPrevSlide() {
+  showPrevSlide();
+  restartSlideTimer();
 }
 
 function startSlideshow() {
   showScreen("slideshow");
   showNextSlide();
-  clearInterval(slideTimer);
-  slideTimer = setInterval(showNextSlide, CONFIG.SLIDE_INTERVAL_MS);
+  restartSlideTimer();
 }
 
 /** Re-fetches the media list (fresh baseUrls) without interrupting playback. */
@@ -558,27 +585,52 @@ function hideMenu() {
   el.menuOverlay.classList.add("hidden");
 }
 
+/**
+ * webOS's remote Back button is unreliable to detect by `e.key` alone —
+ * different firmware/remote combos report it as `Backspace`, `Escape`,
+ * or (most commonly on actual LG TVs) `e.key === "GoBack"` /
+ * `"Unidentified"` with `e.keyCode === 461`. Check all of them rather
+ * than trusting one. If Back still doesn't fire, use `ares-inspect` to
+ * open remote DevTools and check the real `e.key`/`e.keyCode` values
+ * this specific remote sends, then add them here.
+ */
+function isBackKey(e) {
+  return e.keyCode === 461 || e.key === "GoBack" || e.key === "Backspace" || e.key === "Escape";
+}
+
 document.addEventListener("keydown", (e) => {
   if (el.slideshow.classList.contains("hidden")) return; // only during playback
 
-  if (!menuIsOpen()) {
-    showMenu();
-    e.preventDefault();
+  if (menuIsOpen()) {
+    clearTimeout(menuHideTimer);
+    menuHideTimer = setTimeout(hideMenu, MENU_AUTO_HIDE_MS);
+
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+      const next = document.activeElement === el.menuRepick ? el.menuLogout : el.menuRepick;
+      next.focus();
+      e.preventDefault();
+    } else if (isBackKey(e)) {
+      hideMenu();
+      e.preventDefault();
+    }
+    // Enter/OK activates whichever button is focused via native <button> behavior.
     return;
   }
 
-  clearTimeout(menuHideTimer);
-  menuHideTimer = setTimeout(hideMenu, MENU_AUTO_HIDE_MS);
-
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
-    const next = document.activeElement === el.menuRepick ? el.menuLogout : el.menuRepick;
-    next.focus();
+  // Menu closed: Left/Right browse photos manually; Back is a no-op
+  // (nothing open to dismiss); anything else opens the menu.
+  if (e.key === "ArrowRight") {
+    goToNextSlide();
     e.preventDefault();
-  } else if (e.key === "Backspace" || e.key === "Escape") {
-    hideMenu();
+  } else if (e.key === "ArrowLeft") {
+    goToPrevSlide();
+    e.preventDefault();
+  } else if (isBackKey(e)) {
+    e.preventDefault();
+  } else {
+    showMenu();
     e.preventDefault();
   }
-  // Enter/OK activates whichever button is focused via native <button> behavior.
 });
 
 el.menuRepick.addEventListener("click", () => {
